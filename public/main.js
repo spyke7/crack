@@ -34,8 +34,39 @@ const getSession = () => { try { return JSON.parse(sessionStorage.getItem('rw-se
 const saveSession = (code, token) => { try { sessionStorage.setItem('rw-session', JSON.stringify({ code, token })); } catch { /* ignore */ } };
 const clearSession = () => { try { sessionStorage.removeItem('rw-session'); } catch { /* ignore */ } };
 
-for (let n = 2; n <= MAX_PLAYERS; n++) $('cap').append(new Option(`Up to ${n} players`, n));
-$('cap').value = 4;
+const capPicker = $('cap-picker'), capTrigger = $('cap-trigger'), capMenu = $('cap-menu'), capLabel = $('cap-label');
+const capOptions = []; let selectedCapacity = 4;
+for (let n = 2; n <= MAX_PLAYERS; n++) {
+  const option = document.createElement('div');
+  option.className = 'capacity-option'; option.setAttribute('role', 'option'); option.tabIndex = -1;
+  option.dataset.value = n; option.textContent = `Up to ${n} players`;
+  option.onclick = () => setCapacity(n);
+  capMenu.append(option); capOptions.push(option);
+}
+function closeCapacityMenu() { capMenu.hidden = true; capTrigger.setAttribute('aria-expanded', 'false'); }
+function openCapacityMenu() {
+  capMenu.hidden = false; capTrigger.setAttribute('aria-expanded', 'true');
+  capOptions.find(option => +option.dataset.value === selectedCapacity)?.focus();
+}
+function setCapacity(value, returnFocus = true) {
+  selectedCapacity = value; capLabel.textContent = `Up to ${value} players`;
+  capOptions.forEach(option => option.setAttribute('aria-selected', String(+option.dataset.value === value)));
+  closeCapacityMenu(); if (returnFocus) capTrigger.focus();
+}
+capOptions.forEach(option => option.addEventListener('keydown', e => {
+  const index = capOptions.indexOf(e.currentTarget);
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); capOptions[(index + (e.key === 'ArrowDown' ? 1 : -1) + capOptions.length) % capOptions.length].focus(); }
+  else if (e.key === 'Home' || e.key === 'End') { e.preventDefault(); capOptions[e.key === 'Home' ? 0 : capOptions.length - 1].focus(); }
+  else if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setCapacity(+e.currentTarget.dataset.value); }
+  else if (e.key === 'Escape') { e.preventDefault(); closeCapacityMenu(); capTrigger.focus(); }
+}));
+capTrigger.onclick = () => capMenu.hidden ? openCapacityMenu() : closeCapacityMenu();
+capTrigger.onkeydown = e => {
+  if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openCapacityMenu(); }
+  else if (e.key === 'Escape') closeCapacityMenu();
+};
+document.addEventListener('click', e => { if (!capPicker.contains(e.target)) closeCapacityMenu(); });
+setCapacity(4, false);
 try { $('name').value = localStorage.getItem('rw-name') || ''; } catch { /* private mode: ignore */ }
 const invited = new URLSearchParams(location.search).get('room');      // invite link: /?room=ABCD
 if (invited) $('code').value = invited.toUpperCase().slice(0, 4);
@@ -60,7 +91,7 @@ function rejoin() {
   connect(() => ({ type: 'rejoin', code: s.code, token: s.token }));
   return true;
 }
-$('create').onclick = () => connect(name => ({ type: 'create', name, capacity: +$('cap').value }));
+$('create').onclick = () => connect(name => ({ type: 'create', name, capacity: selectedCapacity }));
 $('join').onclick = () => {
   const code = $('code').value.trim().toUpperCase();
   if (code.length !== 4) return toast('Enter the 4-letter room code');
@@ -365,7 +396,8 @@ function showResults() {
   cancelAnimationFrame(frameId);
   $('tune').hidden = true;
   const res = sim.getResults();
-  $('outcome').textContent = res.outcome;
+  const winner = res.reason === 'extinct' ? null : res.rows[0];
+  $('outcome').textContent = winner && winner.color === myColony ? "Congrats! You're CRACKED" : res.outcome;
 
   const table = $('rtable'); table.replaceChildren();
   const head = table.createTHead().insertRow();
@@ -386,5 +418,6 @@ function showResults() {
 }
 $('rematch').onclick = () => send({ type: 'reset' });
 $('leave').onclick = () => { clearSession(); location.href = location.pathname; };
+
 
 if (!invited) rejoin();                                   // page reloaded in the middle of a match? get back in
