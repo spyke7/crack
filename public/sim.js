@@ -8,7 +8,8 @@
 // ---------- shared constants ----------
 export const W = 256, H = 144;              // world grid (cells)
 export const TPS = 30;                      // simulation ticks per second
-export const GAME_SECONDS = 180;            // match length
+export const GAME_SECONDS = 180;            // default match length
+export const MIN_SECONDS = 60, MAX_SECONDS = 300;   // host can pick 1 to 5 minutes
 export const MAX_TICKS = TPS * GAME_SECONDS;
 export const BUDGET = 100, STAT_MAX = 40;   // every player spends exactly 100 points, max 40 on one stat
 export const MAX_PLAYERS = 6;               // hard cap on room capacity
@@ -19,12 +20,13 @@ export const COLORS = ['#000000', '#ff4d6d', '#4cc9f0', '#80ed99', '#ffd166', '#
 const R = {
   maxAgents: 3000, popCap: 650, cell: 8,          // hard array size, per-colony cap, spatial-hash cell size
   startAgents: 14, startEnergy: 70, energyCap: 150, // starting group, starting energy, max energy
-  foodEvery: 45, rainChance: 0.7, foodRadius: 9,    // a food rain every 1.5s; each zone gets rain 70% of the time
-  homeFood: 18, neutralFood: 30, neutralZones: 3,   // pieces per rain: home zones, richer contested zones
-  ambient: 10, scouts: 0.2,                         // random food pieces per rain, share of agents that explore
+  foodEvery: 60, foodRadius: 12, stray: 0.25,       // food rain on a FIXED timer (every 2s); scatter radius; share of pieces landing up to 2x farther
+  homeFood: 6, neutralFood: 10, neutralZones: 3,    // pieces per rain: home zones, richer contested zones
+  ambient: 3, scouts: 0.2,                          // random food pieces per rain, share of agents that explore
   dmgScale: 0.16, defK: 0.9,                        // global damage multiplier, how much defense cancels attack
   bondAt: 40, trustGain: 0.25, trustLoss: 0.15,     // alliance threshold and trust speed
   reproCooldown: 60, killLoot: 0.15,                 // ticks between splits, share of victim energy looted
+  steer: 0.12, body: 1.4, push: 0.25,               // physics: steering inertia, collision diameter (cells), collision push
 };
 
 // ---------- small helpers ----------
@@ -66,8 +68,9 @@ export function derive(s) {
 }
 
 // ============================================================================
-export function createSim(configs, seed) {
+export function createSim(configs, seed, seconds = GAME_SECONDS) {
   const rnd = mulberry32(seed);
+  const maxTicks = TPS * clamp(Math.round(seconds) || GAME_SECONDS, MIN_SECONDS, MAX_SECONDS);
   const N = configs.length, S = N + 1;              // colonies are 1..N, 0 = nobody
   const popCap = Math.min(R.popCap, Math.floor(R.maxAgents / N));
   const GX = Math.ceil(W / R.cell), GY = Math.ceil(H / R.cell);
@@ -81,12 +84,12 @@ export function createSim(configs, seed) {
   const dieAt = new Uint32Array(M), cd = new Uint16Array(M);    // death tick, reproduction cooldown
   const col = new Uint8Array(M);                                // which colony
   const role = new Uint8Array(M);                               // 1 = scout (explores), 0 = settler (stays with the group)
+  const tx = new Float32Array(M), ty = new Float32Array(M);     // desired heading (unit vector) chosen by think()
   let n = 0;                                                    // live agents (indices 0..n-1)
   let tick = 0;                                                 // current simulation tick
 
   // ----- world layers (one byte per cell) -----
   const owner = new Uint8Array(W * H);    // who painted this cell last = territory painting
-  const glow = new Uint8Array(W * H);     // fresh-trail brightness, fades over time
   const food = new Uint8Array(W * H);     // 1 = food here
 
   // ----- colony level data -----
@@ -111,6 +114,7 @@ export function createSim(configs, seed) {
     x[i] = px[i] = clamp(sx, 0, W - 1.01); y[i] = py[i] = clamp(sy, 0, H - 1.01);
     vx[i] = (rnd() - 0.5) * p.speed; vy[i] = (rnd() - 0.5) * p.speed;
     en[i] = energy; hp[i] = p.maxHp; cd[i] = R.reproCooldown; col[i] = c; role[i] = rnd() < R.scouts ? 1 : 0;
+    tx[i] = vx[i] / p.speed; ty[i] = vy[i] / p.speed;
     dieAt[i] = tick + Math.round(p.life * (0.9 + 0.2 * rnd()));
     pop[c]++; born[c]++; if (pop[c] > peak[c]) peak[c] = pop[c];
     return true;
@@ -121,6 +125,7 @@ export function createSim(configs, seed) {
     if (i !== l) {
       x[i] = x[l]; y[i] = y[l]; px[i] = px[l]; py[i] = py[l]; vx[i] = vx[l]; vy[i] = vy[l];
       en[i] = en[l]; hp[i] = hp[l]; dieAt[i] = dieAt[l]; cd[i] = cd[l]; col[i] = col[l]; role[i] = role[l];
+      tx[i] = tx[l]; ty[i] = ty[l];
     }
   }
 
@@ -129,14 +134,14 @@ export function createSim(configs, seed) {
   const zones = [];
   for (let c = 1; c <= N; c++) zones.push([clamp(mem[c].x + (rnd() - 0.5) * 12, 6, W - 6), clamp(mem[c].y + (rnd() - 0.5) * 12, 6, H - 6), R.homeFood]);
   for (let k = 0; k < R.neutralZones; k++) zones.push([W * (0.2 + 0.6 * rnd()), H * (0.2 + 0.6 * rnd()), R.neutralFood]);
-  function dropFood() {
+  function dropFood() {                             // called on a fixed timer; every zone rains every time
     for (const z of zones) {
-      if (rnd() > R.rainChance) continue;
       for (let k = 0; k < z[2]; k++) {
         let ox, oy;
-        do { ox = rnd() * 2 - 1; oy = rnd() * 2 - 1; } while (ox * ox + oy * oy > 1);   // random point in a disc
-        const fx = clamp((z[0] + ox * R.foodRadius) | 0, 0, W - 1), fy = clamp((z[1] + oy * R.foodRadius) | 0, 0, H - 1);
-        food[fy * W + fx] = 1;
+        do { ox = rnd() * 2 - 1; oy = rnd() * 2 - 1; } while (ox * ox + oy * oy > 1);   // random point in a disc (seeded rnd = same on every device)
+        const reach = R.foodRadius * (rnd() < R.stray ? 2 : 1);                          // some pieces land farther out = scattered
+        const fx = Math.floor(z[0] + ox * reach), fy = Math.floor(z[1] + oy * reach);
+        if (fx >= 0 && fx < W && fy >= 0 && fy < H) food[fy * W + fx] = 1;               // off the map: skip (no piling up on the border)
       }
     }
     for (let k = 0; k < R.ambient; k++) food[((rnd() * H) | 0) * W + ((rnd() * W) | 0)] = 1;   // sparse food everywhere
@@ -226,8 +231,7 @@ export function createSim(configs, seed) {
     if (rx || ry) { const rm = Math.sqrt(rx * rx + ry * ry); dx += (rx / rm) * 0.6; dy += (ry / rm) * 0.6; }
     dx += (rnd() - 0.5) * 0.5; dy += (rnd() - 0.5) * 0.5;   // wander noise
     m = Math.sqrt(dx * dx + dy * dy) || 1;
-    vx[i] = vx[i] * 0.4 + (dx / m) * p.speed * 0.6;
-    vy[i] = vy[i] * 0.4 + (dy / m) * p.speed * 0.6;
+    tx[i] = dx / m; ty[i] = dy / m;                 // think only picks a heading; physics does the moving
   }
 
   // ----- fight or befriend every foreign agent within 2 cells -----
@@ -272,11 +276,11 @@ export function createSim(configs, seed) {
 
   // ============================ one simulation tick ============================
   const sim = {
-    done: false, reason: '', W, H, N, owner, glow, food, x, y, px, py, col,
+    done: false, reason: '', W, H, N, owner, food, foodRadius: R.foodRadius, x, y, px, py, col,
     pop, terr, allied, zones, configs,
     get n() { return n; },
     get tick() { return tick; },
-    get timeLeft() { return Math.max(0, (MAX_TICKS - tick) / TPS); },
+    get timeLeft() { return Math.max(0, (maxTicks - tick) / TPS); },
 
     step() {
       if (sim.done) return;
@@ -286,19 +290,44 @@ export function createSim(configs, seed) {
       buildHash();
       const n0 = n;                                                 // newborns wait until next tick (not in the hash yet)
 
+      // ---- physics: smooth steering (inertia) + soft-body collisions between ALL agents ----
+      const bodyD2 = R.body * R.body;
+      for (let i = 0; i < n0; i++) {
+        const sp = P[col[i]].speed;
+        vx[i] += (tx[i] * sp - vx[i]) * R.steer;    // accelerate toward the heading instead of snapping
+        vy[i] += (ty[i] * sp - vy[i]) * R.steer;
+        const g = cellOf[i], gx = g % GX, gy = (g / GX) | 0;
+        for (let oy = -1; oy <= 1; oy++) {
+          const yy = gy + oy; if (yy < 0 || yy >= GY) continue;
+          for (let ox = -1; ox <= 1; ox++) {
+            const xx = gx + ox; if (xx < 0 || xx >= GX) continue;
+            const cell = yy * GX + xx;
+            for (let k = cellStart[cell]; k < cellStart[cell + 1]; k++) {
+              const j = items[k]; if (j === i) continue;
+              const dx = x[i] - x[j], dy = y[i] - y[j], d2 = dx * dx + dy * dy;
+              if (d2 >= bodyD2) continue;
+              if (d2 < 1e-6) { vx[i] += (i & 1 ? 0.1 : -0.1); continue; }   // exactly overlapping: deterministic nudge
+              const d = Math.sqrt(d2), f = (1 - d / R.body) * R.push / d;
+              vx[i] += dx * f; vy[i] += dy * f;     // spring-like push apart (each agent pushes itself, so it's symmetric)
+            }
+          }
+        }
+        const v2 = vx[i] * vx[i] + vy[i] * vy[i], vm = sp * 1.8;
+        if (v2 > vm * vm) { const s = vm / Math.sqrt(v2); vx[i] *= s; vy[i] *= s; }   // speed limit keeps it stable
+      }
+
       for (let i = 0; i < n0; i++) {
         if (hp[i] <= 0) continue;                                   // killed earlier this tick
         const c = col[i], p = P[c];
         if (((t + i) & 3) === 0) think(i, c, p);                    // staggered thinking
 
         x[i] += vx[i]; y[i] += vy[i];                               // move + bounce off the walls
-        if (x[i] < 0) { x[i] = 0; vx[i] = -vx[i]; } else if (x[i] > W - 1.01) { x[i] = W - 1.01; vx[i] = -vx[i]; }
-        if (y[i] < 0) { y[i] = 0; vy[i] = -vy[i]; } else if (y[i] > H - 1.01) { y[i] = H - 1.01; vy[i] = -vy[i]; }
+        if (x[i] < 0) { x[i] = 0; vx[i] = -vx[i]; tx[i] = -tx[i]; } else if (x[i] > W - 1.01) { x[i] = W - 1.01; vx[i] = -vx[i]; tx[i] = -tx[i]; }
+        if (y[i] < 0) { y[i] = 0; vy[i] = -vy[i]; ty[i] = -ty[i]; } else if (y[i] > H - 1.01) { y[i] = H - 1.01; vy[i] = -vy[i]; ty[i] = -ty[i]; }
 
         const cell = (y[i] | 0) * W + (x[i] | 0);                   // paint the territory
         const prev = owner[cell];
         if (prev !== c) { terr[prev]--; terr[c]++; owner[cell] = c; }
-        glow[cell] = 255;
 
         en[i] -= p.drain;                                           // metabolism
         if (hp[i] < p.maxHp) hp[i] += 0.02;                         // slow healing
@@ -322,12 +351,11 @@ export function createSim(configs, seed) {
         if (hp[i] <= 0 || en[i] <= 0 || t >= dieAt[i]) { dead[col[i]]++; removeAt(i); }
       }
 
-      if (t % 6 === 0) for (let k = 0; k < W * H; k++) { const g = glow[k]; if (g) glow[k] = g > 4 ? g - 4 : 0; }
       if (t % TPS === 0) for (let c = 1; c <= N; c++) {             // preferences slowly drift back to neutral
         const w = P[c].w; w.food += (1 - w.food) * 0.02; w.hunt += (0.6 - w.hunt) * 0.02; w.flee += (0.6 - w.flee) * 0.02;
       }
 
-      if (t >= MAX_TICKS) { sim.done = true; sim.reason = 'time'; }
+      if (t >= maxTicks) { sim.done = true; sim.reason = 'time'; }
       else if (t > TPS * 3) {
         let alive = 0; for (let c = 1; c <= N; c++) if (pop[c] > 0) alive++;
         if (alive <= 1) { sim.done = true; sim.reason = alive ? 'last' : 'extinct'; }

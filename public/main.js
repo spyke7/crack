@@ -3,7 +3,7 @@
 //   home -> room (design stats, drop seed, wait) -> game (canvas loop) -> results
 // Talks to server.js over WebSocket; runs sim.js locally; draws with render.js.
 // ============================================================================
-import { createSim, STATS, STAT_MAX, BUDGET, COLORS, MAX_PLAYERS, TPS, W, H } from './sim.js';
+import { createSim, STATS, STAT_MAX, BUDGET, COLORS, MAX_PLAYERS, TPS, W, H, MIN_SECONDS, MAX_SECONDS } from './sim.js';
 import { createRenderer } from './render.js';
 
 const $ = id => document.getElementById(id);
@@ -65,17 +65,34 @@ const PRESETS = {
   Turtle:   { atk: 5,  def: 35, spd: 5,  intel: 10, repro: 25, eat: 15, bond: 5 },
   Diplomat: { atk: 5,  def: 15, spd: 10, intel: 10, repro: 10, eat: 15, bond: 35 },
   Breeder:  { atk: 8,  def: 8,  spd: 8,  intel: 8,  repro: 35, eat: 25, bond: 8 },
+  Community:{ atk: 5,  def: 15, spd: 10, intel: 10, repro: 15, eat: 15, bond: 30 },
 };
 const stats = { ...PRESETS.Balanced };
 const spent = () => STATS.reduce((a, k) => a + stats[k], 0);
+const mmss = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 
+// match length: only the host can move this slider (server checks too); others just see the value
+Object.assign($('time'), { min: MIN_SECONDS, max: MAX_SECONDS });
+$('time').oninput = () => { $('tval').textContent = mmss(+$('time').value); };
+$('time').onchange = () => send({ type: 'time', seconds: +$('time').value });
+const presetBtns = {};                                // name -> button (incl. "Custom")
+
+function markPreset() {                               // highlight the preset that matches the levers, else "Custom"
+  let hit = 'Custom';
+  for (const [name, p] of Object.entries(PRESETS)) if (STATS.every(k => stats[k] === p[k])) { hit = name; break; }
+  for (const [name, b] of Object.entries(presetBtns)) b.classList.toggle('active', name === hit);
+}
 function updateLeft() {
   const left = BUDGET - spent();
   $('left').textContent = left ? `${left} left` : 'ready ✓';
   $('left').classList.toggle('ok', left === 0);
   $('ready').disabled = left !== 0;                   // must spend exactly 100 points
+  markPreset();
 }
-function setStat(k, v) { stats[k] = v; $('s-' + k).value = v; $('v-' + k).textContent = v; }
+function setStat(k, v, keepBox) {                     // keepBox: don't rewrite the number box while the user is typing in it
+  stats[k] = v; $('s-' + k).value = v;
+  if (!keepBox) $('v-' + k).value = v;
+}
 
 (function buildStatForm() {
   const box = $('sliders'), pre = $('presets');
@@ -83,21 +100,32 @@ function setStat(k, v) { stats[k] = v; $('s-' + k).value = v; $('v-' + k).textCo
     const row = document.createElement('label'); row.className = 'stat';
     const name = document.createElement('span'); name.textContent = INFO[k][0];
     const input = document.createElement('input'); Object.assign(input, { type: 'range', min: 0, max: STAT_MAX, value: stats[k], id: 's-' + k }); input.dataset.k = k;
-    const val = document.createElement('b'); val.id = 'v-' + k; val.textContent = stats[k];
+    const val = document.createElement('input'); Object.assign(val, { type: 'number', min: 0, max: STAT_MAX, step: 1, value: stats[k], id: 'v-' + k, inputMode: 'numeric' }); val.dataset.k = k;
     const hint = document.createElement('small'); hint.textContent = INFO[k][1];
     row.append(name, input, val, hint); box.appendChild(row);
   }
+  // one listener for both the slider and the number box of every stat
   box.addEventListener('input', e => {
     const k = e.target.dataset.k; if (!k) return;
-    const room = BUDGET - (spent() - stats[k]);       // points still available for this stat
-    setStat(k, Math.min(+e.target.value, room));      // the slider cannot go past the budget
+    const raw = e.target.value;
+    const room = Math.min(STAT_MAX, BUDGET - (spent() - stats[k]));   // points still available for this stat
+    const v = Math.max(0, Math.min(Math.round(+raw || 0), room));      // the lever cannot go past the budget
+    setStat(k, v, e.target.type === 'number' && raw === '');           // empty box = being retyped, leave it alone
     updateLeft();
   });
+  box.addEventListener('focusout', e => {             // when leaving a number box, show the real value again
+    const k = e.target.dataset.k; if (k) $('v-' + k).value = stats[k];
+  });
+
   for (const [name, preset] of Object.entries(PRESETS)) {
     const b = document.createElement('button'); b.className = 'ghost'; b.textContent = name;
     b.onclick = () => { for (const k of STATS) setStat(k, preset[k]); updateLeft(); };
-    pre.appendChild(b);
+    pre.appendChild(b); presetBtns[name] = b;
   }
+  const custom = document.createElement('button'); custom.className = 'ghost'; custom.textContent = 'Custom';
+  custom.title = 'Start from zero and spend your 100 points yourself';
+  custom.onclick = () => { for (const k of STATS) setStat(k, 0); updateLeft(); };
+  pre.appendChild(custom); presetBtns.Custom = custom;
   updateLeft();
 })();
 
@@ -148,6 +176,10 @@ function onLobby(m) {
   $('waiting').textContent = `${m.players.length}/${m.capacity} joined · ${ready} ready` + (me.host ? '' : ' · host starts the game');
   $('start').hidden = !me.host; $('start').disabled = ready < 2;
   $('ready').textContent = me.ready ? 'Update ✓' : 'Ready';
+  if (document.activeElement !== $('time')) $('time').value = m.seconds;   // don't fight the host while dragging
+  $('tval').textContent = mmss(+$('time').value);
+  $('time').disabled = !me.host;
+  $('thint').textContent = me.host ? 'You are the host: 1 to 5 minutes' : 'Set by the host';
   drawSeedMap();
 }
 $('ready').onclick = () => send({ type: 'config', stats: { ...stats }, spawn });
@@ -168,11 +200,11 @@ const portrait = matchMedia('(orientation: portrait) and (max-width: 900px)');
 const syncPause = () => { paused = portrait.matches; };
 portrait.addEventListener('change', syncPause); syncPause();
 
-function launch({ seed, configs, you }) {
+function launch({ seed, configs, you, seconds }) {
   stopGame();
   myColony = you;
   palette = ['', ...configs.map(c => COLORS[c.slot])];    // colony id (1..N) -> css colour
-  sim = createSim(configs, seed);                         // identical on every device
+  sim = createSim(configs, seed, seconds);                // identical on every device (same seed, configs and match length)
   show('game');                                           // show first, so the canvas has a real size
   renderer = createRenderer($('cv'), sim, palette);
 
@@ -241,7 +273,7 @@ function showResults() {
     });
   });
 
-  const url = renderer.paintingURL();
+  const url = renderer.paintingURL();                     // snapshot of the final frame (taken while the game screen is still visible)
   $('painting').src = url; $('dl').href = url;
   const me = lobby && lobby.players.find(p => p.slot === mySlot);
   $('rematch').hidden = !(me && me.host);

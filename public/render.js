@@ -1,6 +1,6 @@
 // ============================================================================
 // render.js : turns a simulation into pixels, fast.
-//   world (territory, trails, food)  -> one small pixel buffer  -> ONE putImageData
+//   world (background, food)         -> one small pixel buffer  -> ONE putImageData
 //   agents                           -> ONE path + ONE fill per colony
 // The cost per frame is almost independent of how many agents exist.
 // ============================================================================
@@ -21,23 +21,14 @@ export function createRenderer(canvas, sim, palette) {
   const img = lctx.createImageData(W, H);
   const buf = new Uint32Array(img.data.buffer);             // same memory as img.data, viewed as 32-bit pixels
 
-  // --- lookup table: lut[(colony << 8) | glow] = final pixel. No colour maths inside the draw loop. ---
-  const lut = new Uint32Array(256 * palette.length);
   const agentCss = palette.map(h => { const [r, g, b] = rgb(h); return `rgb(${Math.min(255, r + 70)},${Math.min(255, g + 70)},${Math.min(255, b + 70)})`; });
-  for (let c = 1; c < palette.length; c++) {
-    const [r, g, b] = rgb(palette[c]);
-    for (let glow = 0; glow < 256; glow++) {
-      const k = 0.3 + 0.7 * (glow / 255);                   // painted ground = 30% bright, fresh trail = 100%
-      lut[(c << 8) | glow] = pack(BG[0] + (r - BG[0]) * k, BG[1] + (g - BG[1]) * k, BG[2] + (b - BG[2]) * k);
-    }
-  }
   const FOOD_PX = pack(...FOOD);
 
   // --- static background: dark with a soft glow around each fertile zone (computed once) ---
-  const bg = new Uint32Array(W * H);
+  const bg = new Uint32Array(W * H), gr = sim.foodRadius + 2;   // glow radius follows the food scatter radius
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     let t = 0;
-    for (const z of sim.zones) { const d = Math.hypot(x - z[0], y - z[1]); if (d < 11) t = Math.max(t, 1 - d / 11); }
+    for (const z of sim.zones) { const d = Math.hypot(x - z[0], y - z[1]); if (d < gr) t = Math.max(t, 1 - d / gr); }
     bg[y * W + x] = pack(BG[0] + 14 * t, BG[1] + 22 * t, BG[2] + 30 * t);
   }
 
@@ -54,40 +45,38 @@ export function createRenderer(canvas, sim, palette) {
   const ro = new ResizeObserver(resize); ro.observe(canvas); resize();
 
   // alpha = 0..1 progress between the last two ticks, so motion looks smooth at any frame rate
-  function draw(alpha) {
-    const { owner, glow, food, x, y, px, py, col } = sim, n = sim.n;
+  function draw(alpha, showFood = true) {
+    const { food, x, y, px, py, col } = sim, n = sim.n;
 
-    // 1) world layer
-    for (let i = 0; i < W * H; i++) {
-      const o = owner[i];
-      buf[i] = food[i] ? FOOD_PX : o ? lut[(o << 8) | glow[i]] : bg[i];
-    }
+    // 1) world layer: just the dark background + food (territory is still tracked for the score,
+    //    but no trail is drawn)
+    for (let i = 0; i < W * H; i++) buf[i] = showFood && food[i] ? FOOD_PX : bg[i];
     lctx.putImageData(img, 0, 0);
     ctx.fillStyle = '#05060a'; ctx.fillRect(0, 0, cw, ch);
     ctx.drawImage(low, ox, oy, W * scale, H * scale);
 
-    // 2) agents, batched: one beginPath/fill per colony, integer coords, plain squares
-    const s = Math.max(2, Math.round(scale * 0.9));
+    // 2) agents, batched: one beginPath/fill per colony, round particles
+    const rad = Math.max(2, scale * 0.7);           // body radius = half of R.body (1.4 cells) in sim.js
     for (let c = 1; c < palette.length; c++) {
       ctx.fillStyle = agentCss[c];
       ctx.beginPath();
       for (let i = 0; i < n; i++) {
         if (col[i] !== c) continue;
         const ix = px[i] + (x[i] - px[i]) * alpha, iy = py[i] + (y[i] - py[i]) * alpha;
-        ctx.rect((ox + ix * scale) | 0, (oy + iy * scale) | 0, s, s);
+        const cx = ox + ix * scale, cy = oy + iy * scale;
+        ctx.moveTo(cx + rad, cy); ctx.arc(cx, cy, rad, 0, 6.2832);
       }
       ctx.fill();
     }
   }
 
-  // final "territory painting" as a PNG data URL (bigger, no agents, trails shown at steady brightness)
-  function paintingURL(zoom = 4) {
-    const tmp = document.createElement('canvas'); tmp.width = W; tmp.height = H;
-    const im = new ImageData(W, H), b = new Uint32Array(im.data.buffer), { owner } = sim;
-    for (let i = 0; i < W * H; i++) b[i] = owner[i] ? lut[(owner[i] << 8) | 170] : bg[i];
-    tmp.getContext('2d').putImageData(im, 0, 0);
-    const out = document.createElement('canvas'); out.width = W * zoom; out.height = H * zoom;
-    const g = out.getContext('2d'); g.imageSmoothingEnabled = false; g.drawImage(tmp, 0, 0, out.width, out.height);
+  // final snapshot: redraw the last state once WITHOUT food, then crop the world area out of the canvas (no letterbox bars).
+  // Must be called while the game screen is still visible (main.js does that).
+  function paintingURL() {
+    draw(1, false);
+    const w = Math.max(1, Math.round(W * scale)), h = Math.max(1, Math.round(H * scale));
+    const out = document.createElement('canvas'); out.width = w; out.height = h;
+    out.getContext('2d').drawImage(canvas, ox, oy, W * scale, H * scale, 0, 0, w, h);
     return out.toDataURL('image/png');
   }
 

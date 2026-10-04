@@ -1,7 +1,7 @@
 // ============================================================================
 // server.js : static file server + room manager (WebSocket).
 // The server does NOT run the simulation. It only collects each player's stats,
-// then broadcasts { seed, configs } so every browser runs the identical match.
+// then broadcasts { seed, seconds, configs } so every browser runs the identical match.
 // ============================================================================
 import http from 'node:http';
 import fs from 'node:fs';
@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { validStats, STATS, MAX_PLAYERS } from './public/sim.js';   // same budget rule the UI uses
+import { validStats, STATS, MAX_PLAYERS, GAME_SECONDS, MIN_SECONDS, MAX_SECONDS } from './public/sim.js';   // same rules the UI uses
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
@@ -35,7 +35,7 @@ const server = http.createServer((req, res) => {
 });
 
 // ---------- 2. rooms ----------
-// room   = { code, capacity, started, players: [] }
+// room   = { code, capacity, seconds, started, players: [] }
 // player = { slot, name, ws, host, stats|null, spawn|null }    slot = 1..6 = colour in the palette
 const wss = new WebSocketServer({ server, maxPayload: 4096 });
 const rooms = new Map();
@@ -50,10 +50,11 @@ function newCode() {
 const send = (ws, msg) => { if (ws.readyState === 1) ws.send(JSON.stringify(msg)); };
 const cleanName = n => String(n ?? '').trim().slice(0, 16) || 'Player';
 const validSpawn = s => s && Number.isFinite(s.x) && Number.isFinite(s.y) && s.x >= 0.05 && s.x <= 0.95 && s.y >= 0.05 && s.y <= 0.95;
+const cleanSeconds = v => Math.min(MAX_SECONDS, Math.max(MIN_SECONDS, Math.round(+v) || GAME_SECONDS));   // 1..5 minutes
 
 function pushLobby(room) {                                       // tell everybody the room state ("you" differs per person)
   const players = room.players.map(p => ({ slot: p.slot, name: p.name, host: p.host, ready: !!p.stats, spawn: p.spawn }));
-  for (const p of room.players) send(p.ws, { type: 'lobby', code: room.code, capacity: room.capacity, you: p.slot, players });
+  for (const p of room.players) send(p.ws, { type: 'lobby', code: room.code, capacity: room.capacity, seconds: room.seconds, you: p.slot, players });
 }
 
 wss.on('connection', ws => {
@@ -68,7 +69,7 @@ wss.on('connection', ws => {
 
     if (m.type === 'create' && !room) {
       const capacity = Math.min(Math.max(parseInt(m.capacity) || 4, 2), MAX_PLAYERS);
-      room = { code: newCode(), capacity, started: false, players: [] };
+      room = { code: newCode(), capacity, seconds: GAME_SECONDS, started: false, players: [] };
       rooms.set(room.code, room);
       me = { slot: 1, name: cleanName(m.name), ws, host: true, stats: null, spawn: null };
       room.players.push(me);
@@ -91,6 +92,10 @@ wss.on('connection', ws => {
       me.spawn = validSpawn(m.spawn) ? { x: m.spawn.x, y: m.spawn.y } : null;
       pushLobby(room);
     }
+    else if (m.type === 'time' && room && me.host && !room.started) {   // only the host sets the match length
+      room.seconds = cleanSeconds(m.seconds);
+      pushLobby(room);
+    }
     else if (m.type === 'start' && room && me.host && !room.started) {
       const ready = room.players.filter(p => p.stats).sort((a, b) => a.slot - b.slot);
       if (ready.length < 2) return send(ws, { type: 'error', msg: 'Need at least 2 ready players' });
@@ -98,9 +103,9 @@ wss.on('connection', ws => {
       const seed = (Math.random() * 2 ** 32) >>> 0;              // fine here: the server is outside the simulation
       const configs = ready.map(p => ({ name: p.name, slot: p.slot, stats: p.stats, spawn: p.spawn }));
       for (const p of room.players) {                            // "you" = your colony number (0 = spectator)
-        send(p.ws, { type: 'start', seed, configs, you: ready.indexOf(p) + 1 });
+        send(p.ws, { type: 'start', seed, seconds: room.seconds, configs, you: ready.indexOf(p) + 1 });
       }
-      console.log(`room ${room.code}: started with ${ready.length} players (seed ${seed})`);
+      console.log(`room ${room.code}: started with ${ready.length} players (seed ${seed}, ${room.seconds}s)`);
     }
     else if (m.type === 'reset' && room && me.host && room.started) {   // rematch
       room.started = false;
