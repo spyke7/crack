@@ -20,6 +20,29 @@ function show(name) { screen = name; for (const s of SCREENS) $(s).hidden = s !=
 let toastTimer;
 function toast(msg) { const t = $('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 2800); }
 
+const homeCells = $('home-cells');
+const homeCellColors = [
+  ['#4cc9f0', '#4cc9f033', '#4cc9f099'], ['#f72585', '#f7258533', '#f7258599'],
+  ['#80ed99', '#80ed9933', '#80ed9999'], ['#f9c74f', '#f9c74f33', '#f9c74f99'],
+  ['#b388ff', '#b388ff33', '#b388ff99'], ['#ff7b54', '#ff7b5433', '#ff7b5499'],
+];
+for (let i = 0; i < 28; i++) {
+  const cell = document.createElement('span');
+  const color = homeCellColors[i % homeCellColors.length];
+  const duration = 0.9 + Math.random() * 1.6;
+  cell.className = 'home-cell';
+  cell.style.left = `${Math.random() * 100}%`;
+  cell.style.top = `${Math.random() * 100}%`;
+  cell.style.setProperty('--cell-border', color[0]);
+  cell.style.setProperty('--cell-fill', color[1]);
+  cell.style.setProperty('--cell-glow', color[2]);
+  cell.style.setProperty('--cell-dx', `${(Math.random() - 0.5) * 500}px`);
+  cell.style.setProperty('--cell-dy', `${(Math.random() - 0.5) * 360}px`);
+  cell.style.setProperty('--cell-duration', `${duration}s`);
+  cell.style.setProperty('--cell-delay', `${-Math.random() * duration}s`);
+  homeCells.append(cell);
+}
+
 
 let horizon = 0, events = [], seen = new Set(), matchId = 0, isHost = false;
 let srvTick = 0, srvLocal = 0, clockSpeed = 1;

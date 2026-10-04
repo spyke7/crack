@@ -36,8 +36,13 @@
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:14px; min-height:0; overflow:auto; }
 
 
-  #home { display:flex; align-items:center; justify-content:center; background:radial-gradient(circle at 30% 20%, #1a2340 0, var(--bg) 60%); }
-  #home .box { width:min(420px,100%); display:grid; gap:12px; } .or { text-align:center; color:var(--dim); font-size:.85rem; }
+  #home { display:flex; align-items:center; justify-content:center; background:radial-gradient(circle at 18% 12%, #1b292d 0, transparent 38%), #0d1417; isolation:isolate; }
+  #home .box { position:relative; z-index:2; width:min(420px,100%); display:grid; gap:12px; } .or { text-align:center; color:var(--dim); font-size:.85rem; }
+  #home-cells { position:absolute; inset:0; z-index:0; overflow:hidden; pointer-events:none; opacity:.72; }
+  .home-cell { position:absolute; width:clamp(5px, .7vw, 10px); aspect-ratio:1; border:1px solid var(--cell-border); border-radius:2px; background:var(--cell-fill); box-shadow:0 0 16px var(--cell-glow); animation:home-cell-drift var(--cell-duration) ease-in-out var(--cell-delay) infinite alternate; animation-play-state:running; }
+  #home[hidden] .home-cell { animation-play-state:paused; }
+  @keyframes home-cell-drift { to { transform:translate3d(var(--cell-dx), var(--cell-dy), 0) rotate(90deg); opacity:.22; } }
+  @media (prefers-reduced-motion:reduce) { .home-cell { animation:none; } }
 
 
   #room { display:grid; grid-template-columns: 1.15fr 1fr .85fr; gap:12px; }
@@ -99,6 +104,7 @@
 
 
 <main id="home" class="screen">
+  <div id="home-cells" aria-hidden="true"></div>
   <div class="box">
     <div><h1>Crack</h1><div class="sub">Design your colony's laws. Drop a seed. Watch the territory war paint itself.</div></div>
     <input id="name" type="text" maxlength="16" placeholder="Your name" autocomplete="off">
