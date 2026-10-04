@@ -96,10 +96,10 @@ Dependency direction: `main.js → sim.js, render.js`; `render.js → sim.js`; `
 
 ### 4.1 Constants and the `R` knob object
 ```js
-export const W = 256, H = 144;     // world grid (cells), 16:9
-export const TPS = 30;             // ticks per second
+export const W = 256, H = 144;
+export const TPS = 30;
 export const GAME_SECONDS = 180;
-export const MAX_TICKS = TPS * GAME_SECONDS;   // 5400
+export const MAX_TICKS = TPS * GAME_SECONDS;
 export const BUDGET = 100, STAT_MAX = 40;
 ```
 These are `export`ed because `main.js`, `server.js` and `test.js` need the same numbers. Change `W/H` and the renderer, seed picker and spatial hash adapt automatically.
@@ -146,10 +146,10 @@ const eff = s => s / (s + 16);
 
 ### 4.4 Data layout: struct-of-arrays
 ```js
-const x = new Float32Array(M), y = new Float32Array(M);   // position
-const en = new Float32Array(M), hp = new Float32Array(M); // energy, health
-const col = new Uint8Array(M);                            // colony id (1..N)
-let n = 0;                                                // live agents are indices 0..n-1
+const x = new Float32Array(M), y = new Float32Array(M);
+const en = new Float32Array(M), hp = new Float32Array(M);
+const col = new Uint8Array(M);
+let n = 0;
 ```
 Instead of an array of `{x, y, energy}` objects there is **one typed array per property**, indexed by agent number `i`.
 - No object allocation → no garbage-collector pauses (the #1 cause of random stutter).
@@ -163,9 +163,9 @@ Instead of an array of `{x, y, energy}` objects there is **one typed array per p
 
 ### 4.5 World layers
 ```js
-const owner = new Uint8Array(W * H);  // colony that last stepped here
-const glow  = new Uint8Array(W * H);  // 255 when freshly walked, fades to 0
-const food  = new Uint8Array(W * H);  // 1 = food on this cell
+const owner = new Uint8Array(W * H);
+const glow  = new Uint8Array(W * H);
+const food  = new Uint8Array(W * H);
 ```
 Cell index = `y * W + x`. `owner` **is** the territory painting; `glow` is the bright fading trail. The territory counter is kept incrementally so the HUD is O(1):
 ```js
@@ -191,12 +191,12 @@ Without it, "who is near me?" checks every agent against every agent: 1000 agent
 function buildHash() {
   cellStart.fill(0);
   for (let i = 0; i < n; i++) {
-    const c = ((y[i] / R.cell) | 0) * GX + ((x[i] / R.cell) | 0);  // which 8x8 bucket
-    cellOf[i] = c; cellStart[c + 1]++;                                // count agents per bucket
+    const c = ((y[i] / R.cell) | 0) * GX + ((x[i] / R.cell) | 0);
+    cellOf[i] = c; cellStart[c + 1]++;
   }
-  for (let c = 0; c < GX * GY; c++) cellStart[c + 1] += cellStart[c]; // prefix sum -> start offsets
+  for (let c = 0; c < GX * GY; c++) cellStart[c + 1] += cellStart[c];
   cursor.set(cellStart.subarray(0, GX * GY));
-  for (let i = 0; i < n; i++) items[cursor[cellOf[i]]++] = i;         // drop agent ids into place
+  for (let i = 0; i < n; i++) items[cursor[cellOf[i]]++] = i;
 }
 ```
 This is a **counting sort**: pass 1 counts agents per bucket; the prefix sum turns counts into "bucket b starts at offset `cellStart[b]`"; pass 3 writes agent ids so `items[cellStart[b] .. cellStart[b+1]-1]` are exactly the agents in bucket `b`. No allocation, three linear passes. To visit a bucket: `for (k = cellStart[cell]; k < cellStart[cell+1]; k++) j = items[k]`.
@@ -212,8 +212,8 @@ Runs for 1/4 of agents each tick: `if (((t + i) & 3) === 0)`. `(t+i)&3` is `(t+i
    ```
    hunger = max(0.1, 1 - energy/120)
    sFood  = w.food * hunger / (1 + 0.15*dist_to_food)
-   edge   = my.atk - their.def*defK        // damage I would deal
-   danger = their.atk - my.def*defK        // damage I would take
+   edge   = my.atk - their.def*defK
+   danger = their.atk - my.def*defK
    sHunt  = w.hunt * aggr * max(0, edge)  / 10 / (1 + 0.15*dist)
    sFlee  = w.flee * max(0, danger - edge) / 10 / (1 + 0.15*dist)
    ```
@@ -231,10 +231,10 @@ Runs for 1/4 of agents each tick: `if (((t + i) & 3) === 0)`. `(t+i)&3` is `(t+i
 ### 4.9 `contacts(i, c, p)`: fight or befriend
 For every foreign, living, non-allied agent within 2 cells (`dx*dx+dy*dy > 4` is skipped):
 ```js
-if (rnd() < p.aggr) {                // ATTACK
+if (rnd() < p.aggr) {
   dmg = (p.atk - P[o].def * defK) * (0.8 + 0.4*rnd()) * dmgScale;
-  if (dmg > 0) { hp[j] -= dmg; trust[o*S+c] -= trustLoss; ... }   // victim trusts attacker less
-} else {                             // BEFRIEND
+  if (dmg > 0) { hp[j] -= dmg; trust[o*S+c] -= trustLoss; ... }
+} else {
   trust[c*S+o] += p.bondRate * trustGain;
   if (trust[c*S+o] >= bondAt && trust[o*S+c] >= bondAt) allied both ways;
 }
@@ -279,13 +279,13 @@ Goal: per-frame cost almost independent of agent count.
 **1. The world is one tiny bitmap.**
 ```js
 const img = lctx.createImageData(W, H);
-const buf = new Uint32Array(img.data.buffer);   // same memory, 1 number = 1 pixel
+const buf = new Uint32Array(img.data.buffer);
 ```
 `img.data` is RGBA bytes (4 per pixel). A `Uint32Array` over the same buffer lets us write a pixel with **one store** instead of four. The 256×144 bitmap goes up with a single `putImageData`, then one `drawImage` scales it to the screen on the GPU (`imageSmoothingEnabled = false` keeps pixels crisp).
 
 **2. Lookup table instead of colour maths.**
 ```js
-lut[(c << 8) | glow] = pack(...)    // built once
+lut[(c << 8) | glow] = pack(...)
 buf[i] = food[i] ? FOOD_PX : o ? lut[(o << 8) | glow[i]] : bg[i];
 ```
 `(o << 8) | glow` combines colony (high bits) and trail brightness (0-255) into one index: one read, one write per pixel. `pack(r,g,b)` returns `0xAABBGGRR`, which a little-endian `Uint32` stores as bytes `R,G,B,A` (all current devices are little-endian).
@@ -314,8 +314,8 @@ const ix = px[i] + (x[i] - px[i]) * alpha;
 
 ### 6.3 Stat form with a hard budget
 ```js
-const room = BUDGET - (spent() - stats[k]);   // points available if THIS stat were 0
-setStat(k, Math.min(+e.target.value, room));  // slider cannot exceed what is left
+const room = BUDGET - (spent() - stats[k]);
+setStat(k, Math.min(+e.target.value, room));
 ```
 `spent()` sums all stats; subtracting the current stat gives what the others use. The slider you drag simply stops when the budget runs out. **Ready** is disabled unless the total is exactly 100. Presets overwrite all seven values.
 

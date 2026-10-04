@@ -1,14 +1,14 @@
-// ============================================================================
-// test.js : headless checks, no browser needed.   Run:  npm test
-//   1. point-budget rule      2. determinism (same seed => same world)
-//   3. balance scenarios      4. speed (ms per tick at peak population)
-// ============================================================================
+
+
+
+
+
 import { createSim, validStats, STATS, BUDGET } from './public/sim.js';
 
 let failed = 0;
 const check = (name, ok, extra = '') => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${name} ${extra}`); if (!ok) failed++; };
 
-// build a stats object from a partial spec; the rest of the budget is spread evenly
+
 function stats(spec) {
   const s = Object.fromEntries(STATS.map(k => [k, 0]));
   let left = BUDGET;
@@ -32,20 +32,20 @@ function run(configs, seed, maxTicks = Infinity) {
   return { sim, peak, avg: total / ticks, worst, ticks };
 }
 
-// ---------- 1. budget ----------
+
 check('valid budget accepted', validStats(stats({})));
 check('over budget rejected', !validStats({ ...stats({}), atk: 40, def: 40 }));
 check('under budget rejected', !validStats(Object.fromEntries(STATS.map(k => [k, 0]))));
 check('stat above cap rejected', !validStats({ ...stats({ atk: 30 }), def: 41, spd: 0, intel: 0, repro: 0, eat: 0, bond: 0 }));
 
-// ---------- 2. determinism ----------
+
 const base = [col('A', { atk: 20 }, .25, .3), col('B', { def: 20 }, .75, .3), col('C', { bond: 25 }, .5, .75)];
 const a = run(base, 1234, 1500), b = run(base, 1234, 1500), c = run(base, 999, 1500);
 check('same seed => identical world', a.sim.checksum() === b.sim.checksum(), `(${a.sim.checksum()})`);
 check('different seed => different world', a.sim.checksum() !== c.sim.checksum());
 
-// ---------- 3. balance scenarios (6 seeds each) ----------
-// "Everyone maxes the same stat" and "everyone identical" are the edge cases that must still produce a game.
+
+
 const four = (spec) => [col('P1', spec, .2, .25), col('P2', spec, .8, .25), col('P3', spec, .2, .75), col('P4', spec, .8, .75)];
 const SCENARIOS = {
   'flat (all average)':   four({}),
@@ -74,7 +74,7 @@ for (const [name, cfgs] of Object.entries(SCENARIOS)) {
   console.log(`${name.padEnd(21)} | ${Object.values(kinds).join(' / ').padEnd(37)} | ${terr.map(t => t.toFixed(0).padStart(3)).join(' ').padEnd(26)} | ${ally.toFixed(1).padStart(13)} | ${String(peak).padStart(8)} | ${ms.toFixed(2)}`);
 }
 
-// ---------- 4. speed ----------
+
 const heavy = run(SCENARIOS['six players (flat)'], 7);
 check('avg tick under 6 ms with 6 colonies', heavy.avg < 6, `(avg ${heavy.avg.toFixed(2)} ms, worst ${heavy.worst.toFixed(2)} ms, peak ${heavy.peak} agents)`);
 
