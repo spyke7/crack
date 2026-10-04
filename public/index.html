@@ -35,7 +35,7 @@
   .stat small { grid-column:2 / 4; margin-top:-4px; }
   .stat input[type=number] { padding:4px 2px; text-align:center; font-weight:700; border-radius:8px; }
   input[type=range] { width:100%; accent-color:var(--accent); }
-  #left { font-size:.9rem; padding:3px 10px; border-radius:999px; background:#1b2233; } #left.ok { background:#16351f; color:var(--good); }
+  #left, #tleft { font-size:.9rem; padding:3px 10px; border-radius:999px; background:#1b2233; } #left.ok, #tleft.ok { background:#16351f; color:var(--good); }
   #seedmap { width:100%; aspect-ratio:16/9; border-radius:10px; border:1px solid var(--line); background:#0a0c12; image-rendering:pixelated; cursor:crosshair; touch-action:none; display:block; margin-bottom:10px; }
   #players { list-style:none; margin:8px 0; padding:0; display:grid; gap:6px; }
   #players li { display:flex; align-items:center; gap:8px; background:#0d111b; padding:6px 10px; border-radius:10px; }
@@ -51,8 +51,15 @@
   #chips { display:flex; gap:6px; flex-wrap:wrap; flex:1; }
   .chip { display:flex; align-items:center; gap:6px; background:#000a; padding:3px 10px; border-radius:999px; font-size:.8rem; white-space:nowrap; }
   .chip.me { outline:1px solid #fff8; }
-  #speed { padding:4px 12px; background:#000a; color:var(--text); }
   #banner { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:3rem; font-weight:800; pointer-events:none; text-shadow:0 2px 20px #000; }
+
+  /* live tuning panel (in game) */
+  #tune { position:absolute; top:calc(max(6px, env(safe-area-inset-top)) + 40px); right:max(8px, env(safe-area-inset-right));
+          width:min(340px, 46vw); max-height:calc(100dvh - 60px); overflow:auto; z-index:5;
+          background:#131824ee; border:1px solid var(--line); border-radius:14px; padding:10px; backdrop-filter:blur(6px); }
+  #tune h2 { font-size:.95rem; margin-bottom:4px; } #tune .presets { margin:8px 0; }
+  #tunebtn, #speed { padding:4px 12px; background:#000a; color:var(--text); }
+  #lag { background:#000a; color:var(--accent); padding:4px 10px; border-radius:999px; font-size:.8rem; white-space:nowrap; }
 
   /* results */
   #results { display:flex; flex-direction:column; gap:10px; }
@@ -108,10 +115,16 @@
   </section>
 </main>
 
-<!-- 3. game: canvas + HUD -->
+<!-- 3. game: canvas + HUD + live tuning panel -->
 <div id="game" class="screen" hidden>
   <canvas id="cv"></canvas>
-  <div id="hud"><span id="timer">3:00</span><div id="chips"></div><button id="speed">1×</button></div>
+  <div id="hud"><span id="timer">3:00</span><span id="lag" hidden></span><div id="chips"></div><button id="speed">1×</button><button id="tunebtn">⚙ Tune</button></div>
+  <aside id="tune" hidden>
+    <h2>Tune your colony <span id="tleft">live ✓</span></h2>
+    <small>Applies live to your colony on every screen. Points must total exactly 100.</small>
+    <div id="tpresets" class="row presets"></div>
+    <div id="tsliders"></div>
+  </aside>
   <div id="banner"></div>
 </div>
 
@@ -129,7 +142,7 @@
   </div>
 </main>
 
-<div id="rotate"><div class="ph">📱</div><h2 style="justify-content:center">Rotate your phone to landscape</h2><div class="dim">Crack needs a wide screen. The game pauses until you turn it.</div></div>
+<div id="rotate"><div class="ph">📱</div><h2 style="justify-content:center">Rotate your phone to landscape</h2><div class="dim">Crack needs a wide screen. The match keeps running for everyone; you'll catch up when you turn it.</div></div>
 <div id="toast" hidden></div>
 
 <script type="module" src="main.js"></script>

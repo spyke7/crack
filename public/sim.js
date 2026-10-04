@@ -369,6 +369,15 @@ export function createSim(configs, seed, seconds = GAME_SECONDS) {
       return h >>> 0;
     },
 
+    // live stat change: swap in new derived numbers, keep the colony's learned preferences.
+    // Existing agents pick it up next tick; their lifespan stays as spawned, newborns use the new one.
+    retune(c, stats) {
+      if (c < 1 || c > N || !validStats(stats)) return;
+      const p = derive(stats);
+      p.w = P[c].w;
+      P[c] = p;
+    },
+
     getResults() {
       const rows = configs.map((cfg, k) => {
         const c = k + 1;

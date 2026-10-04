@@ -1,7 +1,14 @@
 // ============================================================================
 // main.js : everything the player touches.
-//   home -> room (design stats, drop seed, wait) -> game (canvas loop) -> results
+//   home -> room (design stats, drop seed, wait) -> game (canvas loop + live tuning) -> results
 // Talks to server.js over WebSocket; runs sim.js locally; draws with render.js.
+//
+// The match is driven by the SERVER's clock, not by this device's frame rate:
+//   - the server says "the match is at tick T and runs at S x"; we step the sim to that tick
+//   - we never step past the server's `horizon`, and tune events are applied at their stamped tick,
+//     so every device computes exactly the same match no matter how fast or slow it runs
+//   - stepping does not depend on drawing: a hidden tab keeps simulating (driven by the server's
+//     messages) and a device that was frozen or offline fast-forwards when it comes back
 // ============================================================================
 import { createSim, STATS, STAT_MAX, BUDGET, COLORS, MAX_PLAYERS, TPS, W, H, MIN_SECONDS, MAX_SECONDS } from './sim.js';
 import { createRenderer } from './render.js';
@@ -13,9 +20,19 @@ function show(name) { screen = name; for (const s of SCREENS) $(s).hidden = s !=
 let toastTimer;
 function toast(msg) { const t = $('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 2800); }
 
+// shared-clock state (see the header comment)
+let horizon = 0, events = [], seen = new Set(), matchId = 0, isHost = false;
+let srvTick = 0, srvLocal = 0, clockSpeed = 1;      // "at local time srvLocal the match was at tick srvTick, running at clockSpeed x"
+let sim = null;                                      // declared early: message handlers look at it
+
 // ============================ 1. HOME + WEBSOCKET ============================
 let ws = null;
 const send = msg => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); };
+
+// the server gives every player a token; with it we can come back to a running match after a reload or lost signal
+const getSession = () => { try { return JSON.parse(sessionStorage.getItem('rw-session')); } catch { return null; } };
+const saveSession = (code, token) => { try { sessionStorage.setItem('rw-session', JSON.stringify({ code, token })); } catch { /* ignore */ } };
+const clearSession = () => { try { sessionStorage.removeItem('rw-session'); } catch { /* ignore */ } };
 
 for (let n = 2; n <= MAX_PLAYERS; n++) $('cap').append(new Option(`Up to ${n} players`, n));
 $('cap').value = 4;
@@ -32,9 +49,16 @@ function connect(firstMessage) {
   ws.onmessage = e => onMessage(JSON.parse(e.data));
   ws.onerror = () => toast('Cannot reach the server');
   ws.onclose = () => {
-    if (screen === 'game' || screen === 'results') toast('Connection lost (your match keeps running)');   // the sim is local!
-    else { toast('Disconnected from server'); show('home'); }
+    if (screen === 'game' || screen === 'results') {       // the match goes on without us: keep trying to get back in
+      toast('Connection lost, reconnecting…');
+      setTimeout(() => { if (!ws || ws.readyState > 1) rejoin(); }, 1500);
+    } else { toast('Disconnected from server'); show('home'); }
   };
+}
+function rejoin() {
+  const s = getSession(); if (!s) return false;
+  connect(() => ({ type: 'rejoin', code: s.code, token: s.token }));
+  return true;
 }
 $('create').onclick = () => connect(name => ({ type: 'create', name, capacity: +$('cap').value }));
 $('join').onclick = () => {
@@ -47,6 +71,10 @@ function onMessage(m) {
   if (m.type === 'error') toast(m.msg);
   else if (m.type === 'lobby') onLobby(m);
   else if (m.type === 'start') launch(m);
+  else if (m.type === 'horizon') { setClock(m); if (sim && document.hidden) pump(50); }   // hidden tab: no animation frames, so the server's messages drive the sim
+  else if (m.type === 'tune') addEvents([m]);
+  else if (m.type === 'host') isHost = true;                    // the old host left; we were promoted
+  else if (m.type === 'rejoin_failed') { clearSession(); stopGame(); show('home'); toast('That match is no longer available'); }
 }
 
 // ============================ 2. ROOM: stats, seed, players ============================
@@ -67,67 +95,65 @@ const PRESETS = {
   Breeder:  { atk: 8,  def: 8,  spd: 8,  intel: 8,  repro: 35, eat: 25, bond: 8 },
   Community:{ atk: 5,  def: 15, spd: 10, intel: 10, repro: 15, eat: 15, bond: 30 },
 };
-const stats = { ...PRESETS.Balanced };
-const spent = () => STATS.reduce((a, k) => a + stats[k], 0);
 const mmss = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 
 // match length: only the host can move this slider (server checks too); others just see the value
 Object.assign($('time'), { min: MIN_SECONDS, max: MAX_SECONDS });
 $('time').oninput = () => { $('tval').textContent = mmss(+$('time').value); };
 $('time').onchange = () => send({ type: 'time', seconds: +$('time').value });
-const presetBtns = {};                                // name -> button (incl. "Custom")
 
-function markPreset() {                               // highlight the preset that matches the levers, else "Custom"
-  let hit = 'Custom';
-  for (const [name, p] of Object.entries(PRESETS)) if (STATS.every(k => stats[k] === p[k])) { hit = name; break; }
-  for (const [name, b] of Object.entries(presetBtns)) b.classList.toggle('active', name === hit);
-}
-function updateLeft() {
-  const left = BUDGET - spent();
-  $('left').textContent = left ? `${left} left` : 'ready ✓';
-  $('left').classList.toggle('ok', left === 0);
-  $('ready').disabled = left !== 0;                   // must spend exactly 100 points
-  markPreset();
-}
-function setStat(k, v, keepBox) {                     // keepBox: don't rewrite the number box while the user is typing in it
-  stats[k] = v; $('s-' + k).value = v;
-  if (!keepBox) $('v-' + k).value = v;
-}
-
-(function buildStatForm() {
-  const box = $('sliders'), pre = $('presets');
+// builds the 7 sliders + presets into any container; used by the room AND the in-game panel
+function createStatEditor(box, pre, onChange) {
+  const st = { ...PRESETS.Balanced };
+  const sliders = {}, boxes = {}, presetBtns = {};
+  const spent = () => STATS.reduce((a, k) => a + st[k], 0);
+  function setStat(k, v, keepBox) { st[k] = v; sliders[k].value = v; if (!keepBox) boxes[k].value = v; }   // keepBox: don't rewrite the number box while the user is typing in it
+  function refresh() {                                // highlight the preset that matches the levers, else "Custom"
+    let hit = 'Custom';
+    for (const [name, p] of Object.entries(PRESETS)) if (STATS.every(k => st[k] === p[k])) { hit = name; break; }
+    for (const [name, b] of Object.entries(presetBtns)) b.classList.toggle('active', name === hit);
+    onChange(BUDGET - spent());
+  }
   for (const k of STATS) {
     const row = document.createElement('label'); row.className = 'stat';
     const name = document.createElement('span'); name.textContent = INFO[k][0];
-    const input = document.createElement('input'); Object.assign(input, { type: 'range', min: 0, max: STAT_MAX, value: stats[k], id: 's-' + k }); input.dataset.k = k;
-    const val = document.createElement('input'); Object.assign(val, { type: 'number', min: 0, max: STAT_MAX, step: 1, value: stats[k], id: 'v-' + k, inputMode: 'numeric' }); val.dataset.k = k;
+    const input = document.createElement('input'); Object.assign(input, { type: 'range', min: 0, max: STAT_MAX, value: st[k] }); input.dataset.k = k;
+    const val = document.createElement('input'); Object.assign(val, { type: 'number', min: 0, max: STAT_MAX, step: 1, value: st[k], inputMode: 'numeric' }); val.dataset.k = k;
     const hint = document.createElement('small'); hint.textContent = INFO[k][1];
+    sliders[k] = input; boxes[k] = val;
     row.append(name, input, val, hint); box.appendChild(row);
   }
   // one listener for both the slider and the number box of every stat
   box.addEventListener('input', e => {
     const k = e.target.dataset.k; if (!k) return;
     const raw = e.target.value;
-    const room = Math.min(STAT_MAX, BUDGET - (spent() - stats[k]));   // points still available for this stat
+    const room = Math.min(STAT_MAX, BUDGET - (spent() - st[k]));      // points still available for this stat
     const v = Math.max(0, Math.min(Math.round(+raw || 0), room));      // the lever cannot go past the budget
     setStat(k, v, e.target.type === 'number' && raw === '');           // empty box = being retyped, leave it alone
-    updateLeft();
+    refresh();
   });
   box.addEventListener('focusout', e => {             // when leaving a number box, show the real value again
-    const k = e.target.dataset.k; if (k) $('v-' + k).value = stats[k];
+    const k = e.target.dataset.k; if (k) boxes[k].value = st[k];
   });
-
   for (const [name, preset] of Object.entries(PRESETS)) {
     const b = document.createElement('button'); b.className = 'ghost'; b.textContent = name;
-    b.onclick = () => { for (const k of STATS) setStat(k, preset[k]); updateLeft(); };
+    b.onclick = () => { for (const k of STATS) setStat(k, preset[k]); refresh(); };
     pre.appendChild(b); presetBtns[name] = b;
   }
   const custom = document.createElement('button'); custom.className = 'ghost'; custom.textContent = 'Custom';
   custom.title = 'Start from zero and spend your 100 points yourself';
-  custom.onclick = () => { for (const k of STATS) setStat(k, 0); updateLeft(); };
+  custom.onclick = () => { for (const k of STATS) setStat(k, 0); refresh(); };
   pre.appendChild(custom); presetBtns.Custom = custom;
-  updateLeft();
-})();
+  refresh();
+  return { stats: st, load(s) { for (const k of STATS) setStat(k, s[k]); refresh(); } };
+}
+
+const roomEditor = createStatEditor($('sliders'), $('presets'), left => {
+  $('left').textContent = left ? `${left} left` : 'ready ✓';
+  $('left').classList.toggle('ok', left === 0);
+  $('ready').disabled = left !== 0;                   // must spend exactly 100 points
+});
+const stats = roomEditor.stats;                       // the Ready button sends this
 
 // seed picker: a small map where you tap to drop your colony
 const DEFAULT_SPAWN = [{ x: .15, y: .25 }, { x: .85, y: .25 }, { x: .15, y: .75 }, { x: .85, y: .75 }, { x: .5, y: .15 }, { x: .5, y: .85 }];
@@ -159,10 +185,12 @@ seedCv.addEventListener('pointermove', e => { if (e.buttons) pickSpawn(e); });
 function onLobby(m) {
   if (screen === 'game' || screen === 'results') stopGame();   // host pressed "Rematch"
   lobby = m; mySlot = m.you;
+  if (m.token) saveSession(m.code, m.token);
   if (!spawn) spawn = DEFAULT_SPAWN[m.you - 1];
   if (screen !== 'room') show('room');
 
   const me = m.players.find(p => p.slot === m.you);
+  isHost = me.host;
   $('rcode').textContent = m.code;
   const ul = $('players'); ul.replaceChildren();
   for (const p of m.players) {
@@ -190,63 +218,140 @@ $('copy').onclick = async () => {
   catch { prompt('Copy this invite link:', link); }     // clipboard needs https; fall back to a prompt on plain http
 };
 
-// ============================ 3. GAME LOOP ============================
-const TICK_MS = 1000 / TPS, MAX_STEPS = 4;            // never run more than 4 ticks in one frame
-let sim = null, renderer = null, palette = [], myColony = 0;
-let frameId = 0, acc = 0, last = 0, lastHud = 0, speed = 1, finished = false, chips = [];
-let paused = false;                                   // true while the phone is in portrait
+// ============================ 3. GAME: shared clock, stepping, drawing ============================
+let renderer = null, palette = [], myColony = 0;
+let frameId = 0, lastHud = 0, finished = false, chips = [];
+let paused = false;                                   // true while the phone is in portrait: we keep simulating, we just don't draw
+
+// ---- the shared clock ----
+function setClock(m) {                                // every server clock message says where the match is and how fast it runs
+  srvTick = m.at; srvLocal = performance.now(); clockSpeed = m.speed;
+  horizon = Math.max(horizon, m.tick);
+}
+const wantTick = now => Math.min(horizon, srvTick + (now - srvLocal) * TPS * clockSpeed / 1000);   // the tick the match is at right now
+
+function addEvents(list) {                            // tune events; duplicates (seen again after a reconnect) are ignored
+  let added = false;
+  for (const e of list) if (!seen.has(e.id)) { seen.add(e.id); events.push(e); added = true; }
+  if (added) events.sort((a, b) => a.tick - b.tick || a.id - b.id);   // same order on every device
+}
+
+// ---- stepping: bring the sim up to the server's tick. Independent of drawing. ----
+function pump(budgetMs) {
+  if (!sim) return;
+  if (!sim.done) {
+    const t0 = performance.now(), want = Math.floor(wantTick(t0));
+    while (sim.tick < want && !sim.done) {
+      // apply tune events scheduled for this tick BEFORE stepping (identical on every device)
+      while (events.length && events[0].tick <= sim.tick) { const e = events.shift(); sim.retune(e.colony, e.stats); }
+      sim.step();
+      if (performance.now() - t0 > budgetMs) break;   // never block the page for long; the rest happens next call
+    }
+  }
+  checkEnd();
+}
+function checkEnd() {
+  if (!sim || !sim.done || finished) return;
+  finished = true;
+  $('banner').textContent = { time: "Time's up!", last: 'Last colony standing!', extinct: 'Extinction!' }[sim.reason] || 'Game over';
+  setTimeout(showResults, 1600);
+}
+
+// in-game tuning panel: same editor, sends a change once the points total 100 again (debounced)
+let lastSent = '', tuneTimer = 0;
+const tuner = createStatEditor($('tsliders'), $('tpresets'), left => {
+  $('tleft').textContent = left ? `${left} left` : 'live ✓';
+  $('tleft').classList.toggle('ok', left === 0);
+  clearTimeout(tuneTimer);
+  if (left === 0 && sim) tuneTimer = setTimeout(sendTune, 150);
+});
+function sendTune() {
+  const s = JSON.stringify(tuner.stats);
+  if (s === lastSent) return;
+  lastSent = s; send({ type: 'tune', stats: { ...tuner.stats } });
+}
+$('tunebtn').onclick = () => { $('tune').hidden = !$('tune').hidden; };
+$('speed').onclick = () => {                          // one speed for the whole room: only the host can change it
+  if (!isHost) return toast('Only the host can change the speed');
+  send({ type: 'speed', speed: clockSpeed === 1 ? 2 : clockSpeed === 2 ? 4 : 1 });
+};
 
 const portrait = matchMedia('(orientation: portrait) and (max-width: 900px)');
 const syncPause = () => { paused = portrait.matches; };
 portrait.addEventListener('change', syncPause); syncPause();
 
-function launch({ seed, configs, you, seconds }) {
-  stopGame();
-  myColony = you;
-  palette = ['', ...configs.map(c => COLORS[c.slot])];    // colony id (1..N) -> css colour
-  sim = createSim(configs, seed, seconds);                // identical on every device (same seed, configs and match length)
+function launch(m) {
+  isHost = !!m.host;
+  if (sim && m.matchId === matchId) {                 // we reconnected into the match we are already running: keep the sim, catch up
+    setClock(m); addEvents(m.events || []);
+    return;
+  }
+  stopGame();                                         // new match (or a fresh page): build the sim from scratch and fast-forward
+  matchId = m.matchId; myColony = m.you;
+  horizon = 0; events = []; seen = new Set();
+  addEvents(m.events || []); setClock(m);
+  palette = ['', ...m.configs.map(c => COLORS[c.slot])];    // colony id (1..N) -> css colour
+  sim = createSim(m.configs, m.seed, m.seconds);          // identical on every device (same seed, configs and match length)
   show('game');                                           // show first, so the canvas has a real size
   renderer = createRenderer($('cv'), sim, palette);
 
+  // tuning panel: start from this colony's latest stats; spectators get no panel
+  $('tune').hidden = true; $('tunebtn').hidden = !m.you;
+  if (m.you) {
+    let mine = m.configs[m.you - 1].stats;
+    for (const e of m.events || []) if (e.colony === m.you) mine = e.stats;
+    lastSent = JSON.stringify(mine); tuner.load(mine);
+  }
+
   const box = $('chips'); box.replaceChildren(); chips = [];
-  configs.forEach((cfg, k) => {
-    const el = document.createElement('div'); el.className = 'chip' + (k + 1 === you ? ' me' : '');
+  m.configs.forEach((cfg, k) => {
+    const el = document.createElement('div'); el.className = 'chip' + (k + 1 === m.you ? ' me' : '');
     const dot = document.createElement('span'); dot.className = 'dot'; dot.style.background = palette[k + 1];
     const label = document.createElement('span');
     el.append(dot, label); box.appendChild(el); chips.push({ label, name: cfg.name });
   });
-  speed = 1; $('speed').textContent = '1×'; $('banner').textContent = '';
-  acc = 0; last = performance.now(); lastHud = 0; finished = false;
+  $('banner').textContent = '';
+  lastHud = 0; finished = false;
   frameId = requestAnimationFrame(frame);
 }
 
 function frame(now) {
   frameId = requestAnimationFrame(frame);
-  if (paused) { last = now; return; }                     // phone in portrait: freeze
-  acc += Math.min(now - last, 100) * speed; last = now;   // clamp: a long tab sleep must not cause a huge catch-up
-  let steps = 0;
-  while (acc >= TICK_MS && steps < MAX_STEPS && !sim.done) { sim.step(); acc -= TICK_MS; steps++; }
-  if (steps === MAX_STEPS) acc = 0;                       // too slow: run slower, never spiral. (Ticks are never skipped, so results stay identical.)
-  renderer.draw(Math.min(1, acc / TICK_MS));              // acc/TICK_MS = how far we are between two ticks
-  if (now - lastHud > 250) { lastHud = now; updateHud(); }
-  if (sim.done && !finished) { finished = true; $('banner').textContent = { time: "Time's up!", last: 'Last colony standing!', extinct: 'Extinction!' }[sim.reason] || 'Game over'; setTimeout(showResults, 1600); }
+  if (!sim) return;
+  pump(wantTick(now) - sim.tick > TPS * 2 ? 40 : 12);     // far behind (just came back)? spend more of each frame catching up
+  if (!paused) {
+    const w = wantTick(now), fl = Math.floor(w);
+    renderer.draw(sim.tick < fl || w >= horizon ? 1 : w - fl);   // fraction of the way between the last two ticks, so motion is smooth
+  }
+  if (now - lastHud > 250) { lastHud = now; updateHud(now); }
 }
 
-function updateHud() {
+function updateHud(now) {
   const t = Math.ceil(sim.timeLeft);
   $('timer').textContent = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+  const lag = sim.done ? 0 : (wantTick(now) - sim.tick) / (TPS * clockSpeed);   // seconds this device is behind the shared clock
+  $('lag').hidden = lag < 1.5; $('lag').textContent = `⏩ catching up ${Math.ceil(lag)}s`;
+  $('speed').textContent = clockSpeed + '×';
   chips.forEach((chip, k) => {
     const c = k + 1; let allies = 0;
     for (let o = 1; o <= sim.N; o++) if (sim.allied[c * (sim.N + 1) + o]) allies++;
     chip.label.textContent = `${chip.name} ${sim.pop[c]} · ${(sim.terr[c] / (W * H) * 100).toFixed(0)}%` + (allies ? ` 🤝${allies}` : '') + (sim.pop[c] ? '' : ' ☠');
   });
 }
-$('speed').onclick = () => { speed = speed === 1 ? 2 : speed === 2 ? 4 : 1; $('speed').textContent = speed + '×'; };
+
+// keep simulating while the tab is hidden: the server's messages drive it (see onMessage); this timer is a backup
+setInterval(() => { if (sim && document.hidden) pump(200); }, 500);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  lastHud = 0;
+  if ((screen === 'game' || screen === 'results') && (!ws || ws.readyState > 1)) rejoin();   // phone woke up with a dead socket
+});
 
 function stopGame() {
   cancelAnimationFrame(frameId);
+  clearTimeout(tuneTimer); $('tune').hidden = true;
   if (renderer) renderer.destroy();
-  sim = null; renderer = null;
+  sim = null; renderer = null; matchId = 0;
 }
 
 // ============================ 4. RESULTS ============================
@@ -258,6 +363,7 @@ const COLUMNS = [
 function showResults() {
   if (screen !== 'game' || !sim) return;                  // player already left or rematch started
   cancelAnimationFrame(frameId);
+  $('tune').hidden = true;
   const res = sim.getResults();
   $('outcome').textContent = res.outcome;
 
@@ -273,11 +379,12 @@ function showResults() {
     });
   });
 
-  const url = renderer.paintingURL();                     // snapshot of the final frame (taken while the game screen is still visible)
+  const url = renderer.paintingURL();                     // snapshot of the final frame (redraws the last state itself, so it works even if the tab was hidden)
   $('painting').src = url; $('dl').href = url;
-  const me = lobby && lobby.players.find(p => p.slot === mySlot);
-  $('rematch').hidden = !(me && me.host);
+  $('rematch').hidden = !isHost;
   show('results');
 }
 $('rematch').onclick = () => send({ type: 'reset' });
-$('leave').onclick = () => { location.href = location.pathname; };
+$('leave').onclick = () => { clearSession(); location.href = location.pathname; };
+
+if (!invited) rejoin();                                   // page reloaded in the middle of a match? get back in
