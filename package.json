@@ -1,0 +1,14 @@
+{
+  "name": "rule-wars",
+  "version": "1.0.0",
+  "description": "Multiplayer colony-war sandbox: design your colony's stats, drop a seed, watch territory patterns emerge.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node test.js"
+  },
+  "engines": { "node": ">=18.11" },
+  "dependencies": { "ws": "^8.18.0" }
+}

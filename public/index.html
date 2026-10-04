@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Rule Wars</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { --bg:#0a0c12; --panel:#131824; --line:#232b3d; --text:#e8ecf5; --dim:#8b95ad; --accent:#4cc9f0; --good:#80ed99; --bad:#ff4d6d; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--text); overflow:hidden;
+               font:15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; touch-action:manipulation; -webkit-tap-highlight-color:transparent; }
+  .screen { position:fixed; inset:0; padding:max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); overflow:auto; }
+  h1 { margin:0; font-size:2.4rem; letter-spacing:.02em; } h2 { margin:0 0 8px; font-size:1.05rem; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .sub, small, .dim { color:var(--dim); } small { font-size:.78rem; }
+  input, select, button { font:inherit; color:inherit; }
+  input[type=text], select { background:#0d111b; border:1px solid var(--line); border-radius:10px; padding:10px 12px; width:100%; }
+  button { background:var(--accent); color:#04141a; border:0; border-radius:999px; padding:10px 18px; font-weight:700; cursor:pointer; }
+  button:disabled { opacity:.35; cursor:not-allowed; } button.ghost { background:#1b2233; color:var(--text); }
+  .row { display:flex; gap:10px; align-items:center; } .row > * { flex:1; } .row > button { flex:none; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:14px; min-height:0; overflow:auto; }
+
+  /* home */
+  #home { display:flex; align-items:center; justify-content:center; background:radial-gradient(circle at 30% 20%, #1a2340 0, var(--bg) 60%); }
+  #home .box { width:min(420px,100%); display:grid; gap:12px; } .or { text-align:center; color:var(--dim); font-size:.85rem; }
+
+  /* room: 3 panels */
+  #room { display:grid; grid-template-columns: 1.15fr 1fr .85fr; gap:12px; }
+  .presets { flex-wrap:wrap; gap:6px; margin-bottom:10px; } .presets button { padding:5px 12px; font-size:.8rem; }
+  .stat { display:grid; grid-template-columns: 96px 1fr 28px; align-items:center; gap:2px 10px; margin-bottom:6px; }
+  .stat small { grid-column:2 / 4; margin-top:-4px; } .stat b { text-align:right; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  #left { font-size:.9rem; padding:3px 10px; border-radius:999px; background:#1b2233; } #left.ok { background:#16351f; color:var(--good); }
+  #seedmap { width:100%; aspect-ratio:16/9; border-radius:10px; border:1px solid var(--line); background:#0a0c12; image-rendering:pixelated; cursor:crosshair; touch-action:none; display:block; margin-bottom:10px; }
+  #players { list-style:none; margin:8px 0; padding:0; display:grid; gap:6px; }
+  #players li { display:flex; align-items:center; gap:8px; background:#0d111b; padding:6px 10px; border-radius:10px; }
+  .dot { width:12px; height:12px; border-radius:50%; flex:none; } #players .r { margin-left:auto; color:var(--good); }
+  #rcode { letter-spacing:.2em; font-size:1.3rem; color:var(--accent); }
+
+  /* game */
+  #game { padding:0; overflow:hidden; background:#05060a; }
+  #cv { width:100vw; height:100dvh; display:block; }
+  #hud { position:absolute; top:max(6px, env(safe-area-inset-top)); left:max(8px, env(safe-area-inset-left)); right:max(8px, env(safe-area-inset-right)); display:flex; gap:8px; align-items:center; pointer-events:none; }
+  #hud > * { pointer-events:auto; } #timer { font-variant-numeric:tabular-nums; font-weight:700; background:#000a; padding:4px 10px; border-radius:999px; }
+  #chips { display:flex; gap:6px; flex-wrap:wrap; flex:1; }
+  .chip { display:flex; align-items:center; gap:6px; background:#000a; padding:3px 10px; border-radius:999px; font-size:.8rem; white-space:nowrap; }
+  .chip.me { outline:1px solid #fff8; }
+  #speed { padding:4px 12px; background:#000a; color:var(--text); }
+  #banner { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:3rem; font-weight:800; pointer-events:none; text-shadow:0 2px 20px #000; }
+
+  /* results */
+  #results { display:flex; flex-direction:column; gap:10px; }
+  .resgrid { display:grid; grid-template-columns: minmax(0,1fr) minmax(0,1.5fr); gap:12px; min-height:0; }
+  #painting { width:100%; border-radius:12px; border:1px solid var(--line); image-rendering:pixelated; }
+  .tablewrap { overflow:auto; } table { border-collapse:collapse; width:100%; font-size:.82rem; white-space:nowrap; }
+  th, td { padding:5px 8px; text-align:right; border-bottom:1px solid var(--line); } th:nth-child(1), td:nth-child(1), th:nth-child(2), td:nth-child(2) { text-align:left; } th { color:var(--dim); font-weight:600; position:sticky; top:0; background:var(--bg); }
+  tr.win td { color:var(--good); font-weight:700; }
+
+  #toast { position:fixed; left:50%; bottom:max(16px, env(safe-area-inset-bottom)); transform:translateX(-50%); background:#000d; border:1px solid var(--line); padding:8px 16px; border-radius:999px; z-index:30; pointer-events:none; }
+
+  /* phone in portrait: ask for landscape and hide everything else */
+  #rotate { display:none; position:fixed; inset:0; z-index:50; background:var(--bg); flex-direction:column; align-items:center; justify-content:center; gap:16px; text-align:center; padding:24px; }
+  #rotate .ph { font-size:4rem; animation:turn 2s ease-in-out infinite; } @keyframes turn { 0%,30% { transform:rotate(0) } 70%,100% { transform:rotate(-90deg) } }
+  @media (orientation: portrait) and (max-width: 900px) { #rotate { display:flex; } }
+
+  /* short landscape phones: tighten everything */
+  @media (max-height: 500px) {
+    h1 { font-size:1.6rem; } .screen { padding:8px max(10px, env(safe-area-inset-right)); } .panel { padding:10px; }
+    .stat { margin-bottom:2px; } .stat small { display:none; } #banner { font-size:2rem; } .resgrid { grid-template-columns:1fr 2fr; }
+  }
+  @media (max-width: 760px) and (orientation: landscape) { #room { grid-template-columns: 1.2fr 1fr .9fr; font-size:13px; } .stat { grid-template-columns:74px 1fr 24px; } }
+</style>
+</head>
+<body>
+
+<!-- 1. home: name, create or join -->
+<main id="home" class="screen">
+  <div class="box">
+    <div><h1>Rule Wars</h1><div class="sub">Design your colony's laws. Drop a seed. Watch the territory war paint itself.</div></div>
+    <input id="name" type="text" maxlength="16" placeholder="Your name" autocomplete="off">
+    <div class="row"><select id="cap" aria-label="Room size"></select><button id="create">Create room</button></div>
+    <div class="or">or join a friend's room</div>
+    <div class="row"><input id="code" type="text" maxlength="4" placeholder="CODE" autocapitalize="characters" autocomplete="off"><button id="join" class="ghost">Join</button></div>
+  </div>
+</main>
+
+<!-- 2. room: design stats, drop seed, see who is here -->
+<main id="room" class="screen" hidden>
+  <section class="panel"><h2>Design your colony <span id="left">100 left</span></h2><div id="presets" class="row presets"></div><div id="sliders"></div></section>
+  <section class="panel">
+    <h2>Drop your seed <small>tap the map</small></h2>
+    <canvas id="seedmap" width="512" height="288"></canvas>
+    <button id="ready" style="width:100%">Ready</button>
+  </section>
+  <section class="panel">
+    <h2>Room <span id="rcode"></span></h2>
+    <button id="copy" class="ghost" style="width:100%">Copy invite link</button>
+    <ul id="players"></ul>
+    <p class="dim" id="waiting"></p>
+    <button id="start" style="width:100%" hidden>Start game</button>
+  </section>
+</main>
+
+<!-- 3. game: canvas + HUD -->
+<div id="game" class="screen" hidden>
+  <canvas id="cv"></canvas>
+  <div id="hud"><span id="timer">3:00</span><div id="chips"></div><button id="speed">1×</button></div>
+  <div id="banner"></div>
+</div>
+
+<!-- 4. results -->
+<main id="results" class="screen" hidden>
+  <h2 id="outcome" style="font-size:1.3rem"></h2>
+  <div class="resgrid">
+    <div><img id="painting" alt="Final territory painting"></div>
+    <div class="tablewrap"><table id="rtable"></table></div>
+  </div>
+  <div class="row" style="justify-content:flex-start">
+    <a id="dl" download="rule-wars-painting.png"><button>Download painting</button></a>
+    <button id="rematch" class="ghost" hidden>Rematch</button>
+    <button id="leave" class="ghost">Leave</button>
+  </div>
+</main>
+
+<div id="rotate"><div class="ph">📱</div><h2 style="justify-content:center">Rotate your phone to landscape</h2><div class="dim">Rule Wars needs a wide screen. The game pauses until you turn it.</div></div>
+<div id="toast" hidden></div>
+
+<script type="module" src="main.js"></script>
+</body>
+</html>
