@@ -132,7 +132,7 @@ setInterval(() => {
 }, 30000);
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`\nRule Wars is running\n  this computer : http://localhost:${PORT}`);
+  console.log(`\nCrack is running\n  this computer : http://localhost:${PORT}`);
   for (const list of Object.values(os.networkInterfaces()))
     for (const i of list ?? []) if (i.family === 'IPv4' && !i.internal) console.log(`  on your Wi-Fi : http://${i.address}:${PORT}   (open this on your phone)`);
   console.log('');

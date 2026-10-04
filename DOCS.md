@@ -1,4 +1,4 @@
-# Rule Wars: Developer Documentation
+# Crack: Developer Documentation
 
 Multiplayer colony-war sandbox. Each player spends exactly **100 points** on 7 stats, drops a **seed** on the map, and the colonies fight, breed, ally and paint territory on a shared 2D grid for 3 minutes. The final map is a "territory painting"; the results screen ranks colonies.
 
@@ -12,7 +12,7 @@ Multiplayer colony-war sandbox. Each player spends exactly **100 points** on 7 s
 
 ### 1.1 One-time setup
 1. Install **Node.js 18.11 or newer** (20 or 22 recommended) from https://nodejs.org (LTS button). Check: `node -v`.
-2. Unzip the project and open a terminal inside the `rule-wars` folder.
+2. Unzip the project and open a terminal inside the `crack` folder.
 3. Install the one dependency:
    ```bash
    npm install
