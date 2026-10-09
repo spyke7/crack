@@ -12,6 +12,7 @@ GRANT SELECT ON TABLE "participant_credits" TO authenticated;
 REVOKE INSERT, UPDATE, DELETE ON TABLE "participant_credits" FROM anon, authenticated;
 --> statement-breakpoint
 
+DROP POLICY IF EXISTS "Participants can read their own credits" ON public.participant_credits;
 CREATE POLICY "Participants can read their own credits"
   ON "participant_credits" FOR SELECT TO authenticated
   USING ((SELECT auth.uid()) = "participant_id");

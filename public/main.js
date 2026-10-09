@@ -51,10 +51,32 @@ let sim = null;
 
 
 let ws = null;
+let pendingWsMessage = null;
 const send = msg => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); };
 
 let supabase = null, currentUser = null;
-function setCredits(value) { $('credits').textContent = `${Number.isInteger(value) ? value : 100} credits`; }
+let currentCredits = 100, activeBet = 0, bettingUntil = 0, bettingEnabled = false, betTimer = 0, betMatchId = 0;
+function setCredits(value) {
+  currentCredits = Number.isInteger(value) ? value : currentCredits;
+  $('credits').textContent = `${currentCredits} credits`;
+  refreshBetControls();
+}
+function refreshBetControls() {
+  const slider = $('bet-slider'); if (!slider) return;
+  const max = currentCredits + activeBet;
+  slider.max = Math.max(20, max);
+  slider.value = Math.max(20, Math.min(max, +slider.value || 20));
+  $('bet-value').textContent = `${slider.value} credits`;
+  const disabled = max < 20 || !bettingEnabled || !bettingUntil || Date.now() >= bettingUntil;
+  slider.disabled = disabled;
+  $('bet-submit').disabled = disabled;
+}
+function updateBetTimer() {
+  if (!bettingUntil) return;
+  const seconds = Math.max(0, Math.ceil((bettingUntil - Date.now()) / 1000));
+  $('bet-time').textContent = seconds ? `${seconds}s left` : 'Locked';
+  if (!seconds) refreshBetControls();
+}
 async function loadCredits() {
   if (!supabase || !currentUser) return;
   const { data, error } = await supabase.from('participant_credits').select('credits').eq('participant_id', currentUser.id).single();
@@ -106,6 +128,15 @@ $('google-signin').onclick = async () => {
   }
 };
 $('signout').onclick = async () => { if (supabase) await supabase.auth.signOut(); };
+$('bet-slider').oninput = () => refreshBetControls();
+$('bet-submit').onclick = () => {
+  if (!betMatchId || Date.now() >= bettingUntil) return toast('Bidding is closed');
+  const amount = +$('bet-slider').value;
+  if (amount < 20 || amount > currentCredits + activeBet) return toast('Choose a valid bid amount');
+  $('bet-submit').disabled = true;
+  $('bet-status').textContent = 'Submitting bid…';
+  send({ type: 'bet', matchId: betMatchId, amount });
+};
 
 
 const getSession = () => { try { return JSON.parse(sessionStorage.getItem('rw-session')); } catch { return null; } };
@@ -155,10 +186,18 @@ function connect(firstMessage) {
   clearTimeout(reconnectTimer); reconnectTimer = 0;
   if (ws) { ws.onclose = null; ws.close(); }
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws`);
-  ws.onopen = () => { reconnectDelay = 1000; send(firstMessage(name)); };
+  pendingWsMessage = null;
+  ws.onopen = async () => {
+    reconnectDelay = 1000;
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) { toast('Please sign in again to continue'); ws.close(1008, 'Authentication required'); return; }
+    pendingWsMessage = firstMessage(name);
+    send({ type: 'auth', accessToken: session.access_token });
+  };
   ws.onmessage = e => { try { onMessage(JSON.parse(e.data)); } catch (error) { console.error('Invalid server message', error); toast('Something went wrong. Please try again.'); } };
   ws.onerror = error => { console.error('WebSocket connection failed', error); toast('Connection unavailable. Please try again.'); };
   ws.onclose = () => {
+    pendingWsMessage = null;
     if (screen === 'game' || screen === 'results') {
       toast('Connection lost, reconnecting…');
       scheduleReconnect();
@@ -188,7 +227,25 @@ $('join').onclick = () => {
 };
 
 function onMessage(m) {
-  if (m.type === 'error') toast(m.msg);
+  if (m.type === 'auth_ok') { if (pendingWsMessage) { send(pendingWsMessage); pendingWsMessage = null; } return; }
+  if (m.type === 'auth_failed') { pendingWsMessage = null; toast('Please sign in again to continue'); return; }
+  if (m.type === 'error') {
+    toast(m.msg);
+    if (!$('bet-panel').hidden) { $('bet-status').textContent = 'Bid was not accepted. Try again.'; refreshBetControls(); }
+  }
+  else if (m.type === 'bet_ack') {
+    activeBet = m.amount; setCredits(m.balance); $('bet-status').textContent = `${activeBet} credits committed to your bid`;
+    $('bet-submit').textContent = 'Update bid'; $('bet-submit').disabled = false; refreshBetControls();
+  }
+  else if (m.type === 'bet_settled') {
+    activeBet = 0; if (betTimer) clearInterval(betTimer); betTimer = 0;
+    $('bet-panel').hidden = true;
+    if (m.payout > 0) toast(`Your bid won ${m.payout} credits`);
+    else if (m.refunded) toast('Your bid was returned');
+    else if (m.hadBet) toast('Your bid did not win');
+    loadCredits();
+  }
+  else if (m.type === 'settlement_failed') toast('Bid results are still being processed');
   else if (m.type === 'lobby') onLobby(m);
   else if (m.type === 'start') launch(m);
   else if (m.type === 'horizon') { setClock(m); if (sim && document.hidden) pump(50); }
@@ -408,6 +465,18 @@ function launch(m) {
   }
   stopGame();
   matchId = m.matchId; myColony = m.you;
+  betMatchId = m.matchId; activeBet = Number.isInteger(m.betAmount) ? m.betAmount : 0;
+  bettingEnabled = !!m.bettingEnabled;
+  bettingUntil = bettingEnabled && Number.isFinite(m.bettingUntil) ? m.bettingUntil : 0;
+  $('bet-panel').hidden = !m.you;
+  $('bet-time').textContent = '';
+  $('bet-status').textContent = !bettingEnabled ? 'Bidding is unavailable for this match.'
+    : activeBet ? `${activeBet} credits committed to your bid` : 'Choose a bid before the window closes.';
+  $('bet-submit').textContent = activeBet ? 'Update bid' : 'Place bid';
+  $('bet-slider').value = activeBet || 20;
+  refreshBetControls();
+  if (betTimer) clearInterval(betTimer);
+  if (!$('bet-panel').hidden && bettingEnabled) { updateBetTimer(); betTimer = setInterval(updateBetTimer, 500); }
   horizon = 0; events = []; seen = new Set();
   addEvents(m.events || []); setClock(m);
   palette = ['', ...m.configs.map(c => COLORS[c.slot])];
@@ -447,6 +516,7 @@ function frame(now) {
 }
 
 function updateHud(now) {
+  updateBetTimer();
   const t = Math.ceil(sim.timeLeft);
   $('timer').textContent = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
   const lag = sim.done ? 0 : (wantTick(now) - sim.tick) / (TPS * clockSpeed);
@@ -471,6 +541,8 @@ function stopGame() {
   cancelAnimationFrame(frameId);
   clearTimeout(reconnectTimer); reconnectTimer = 0; reconnectDelay = 1000;
   clearTimeout(tuneTimer); $('tune').hidden = true;
+  if (betTimer) clearInterval(betTimer); betTimer = 0;
+  $('bet-panel').hidden = true; bettingUntil = 0; bettingEnabled = false; betMatchId = 0; activeBet = 0;
   if (renderer) renderer.destroy();
   sim = null; renderer = null; matchId = 0;
 }
@@ -486,6 +558,8 @@ function showResults() {
   cancelAnimationFrame(frameId);
   $('tune').hidden = true;
   const res = sim.getResults();
+  send({ type: 'finish', matchId });
+  $('bet-panel').hidden = true;
   const winner = res.reason === 'extinct' ? null : res.rows[0];
   $('outcome').textContent = winner && winner.color === myColony ? "Congrats! You're CRACKED" : res.outcome;
 

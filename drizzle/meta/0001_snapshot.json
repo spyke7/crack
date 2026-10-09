@@ -1,0 +1,279 @@
+{
+  "id": "8f17f586-002a-4802-a24b-97a503c77c77",
+  "prevId": "57b23218-395e-4c1d-896d-ed58bd0c7d6d",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.app_commissions": {
+      "name": "app_commissions",
+      "schema": "",
+      "columns": {
+        "room_code": {
+          "name": "room_code",
+          "type": "varchar(4)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "match_id": {
+          "name": "match_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "credits": {
+          "name": "credits",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "app_commissions_room_code_match_id_pk": {
+          "name": "app_commissions_room_code_match_id_pk",
+          "columns": [
+            "room_code",
+            "match_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.match_settlements": {
+      "name": "match_settlements",
+      "schema": "",
+      "columns": {
+        "room_code": {
+          "name": "room_code",
+          "type": "varchar(4)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "match_id": {
+          "name": "match_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "winning_colonies": {
+          "name": "winning_colonies",
+          "type": "integer[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pool_credits": {
+          "name": "pool_credits",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "commission_credits": {
+          "name": "commission_credits",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "settled_at": {
+          "name": "settled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "match_settlements_room_code_match_id_pk": {
+          "name": "match_settlements_room_code_match_id_pk",
+          "columns": [
+            "room_code",
+            "match_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.match_wagers": {
+      "name": "match_wagers",
+      "schema": "",
+      "columns": {
+        "participant_id": {
+          "name": "participant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "room_code": {
+          "name": "room_code",
+          "type": "varchar(4)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "match_id": {
+          "name": "match_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "colony": {
+          "name": "colony",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount": {
+          "name": "amount",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payout_credits": {
+          "name": "payout_credits",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "settled_at": {
+          "name": "settled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "match_wagers_participant_id_users_id_fk": {
+          "name": "match_wagers_participant_id_users_id_fk",
+          "tableFrom": "match_wagers",
+          "tableTo": "users",
+          "schemaTo": "auth",
+          "columnsFrom": [
+            "participant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "match_wagers_participant_id_room_code_match_id_pk": {
+          "name": "match_wagers_participant_id_room_code_match_id_pk",
+          "columns": [
+            "participant_id",
+            "room_code",
+            "match_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "match_wagers_minimum_amount": {
+          "name": "match_wagers_minimum_amount",
+          "value": "\"match_wagers\".\"amount\" >= 20"
+        },
+        "match_wagers_positive_colony": {
+          "name": "match_wagers_positive_colony",
+          "value": "\"match_wagers\".\"colony\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.participant_credits": {
+      "name": "participant_credits",
+      "schema": "",
+      "columns": {
+        "participant_id": {
+          "name": "participant_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "credits": {
+          "name": "credits",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 100
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "participant_credits_participant_id_users_id_fk": {
+          "name": "participant_credits_participant_id_users_id_fk",
+          "tableFrom": "participant_credits",
+          "tableTo": "users",
+          "schemaTo": "auth",
+          "columnsFrom": [
+            "participant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "participant_credits_nonnegative": {
+          "name": "participant_credits_nonnegative",
+          "value": "\"participant_credits\".\"credits\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

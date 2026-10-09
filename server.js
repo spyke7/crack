@@ -18,7 +18,8 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { validStats, STATS, MAX_PLAYERS, GAME_SECONDS, MIN_SECONDS, MAX_SECONDS, TPS } from './public/sim.js';
+import { createClient } from '@supabase/supabase-js';
+import { createSim, validStats, STATS, MAX_PLAYERS, GAME_SECONDS, MIN_SECONDS, MAX_SECONDS, TPS } from './public/sim.js';
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
@@ -31,6 +32,13 @@ const envInt = (value, fallback, min, max) => {
   return Number.isInteger(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
 };
 const MAX_ROOMS = envInt(process.env.MAX_ROOMS, 1000, 1, 10000);
+const WAGER_WINDOW_MS = 20000;
+const supabaseAuth = process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY
+  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY, { auth: { persistSession: false, autoRefreshToken: false } })
+  : null;
+const supabaseAdmin = process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } })
+  : null;
 const MAX_MESSAGES_PER_WINDOW = 120;
 const MESSAGE_WINDOW_MS = 10000;
 const allowedOrigins = new Set(String(process.env.ALLOWED_ORIGINS ?? '').split(',').map(origin => origin.trim()).filter(Boolean));
@@ -130,7 +138,73 @@ const EMPTY_MS = 120000;
 const clockAt = (room, now = Date.now()) => room.clk.tick + (now - room.clk.at) * TPS * room.clk.speed / 1000;
 const clockMsg = room => ({ type: 'horizon', tick: room.horizon, at: Math.min(room.maxTicks, clockAt(room)), speed: room.clk.speed });
 const startMsg = (room, p) => ({ ...clockMsg(room), type: 'start', matchId: room.matchId, seed: room.seed, seconds: room.seconds,
-  configs: room.configs, you: p.colony, host: p.host, events: room.events });
+  configs: room.configs, you: p.colony, host: p.host, events: room.events,
+  bettingEnabled: !!supabaseAdmin && !room.settled, bettingUntil: room.bettingUntil, betAmount: p.betAmount || 0,
+  betSettled: !!room.settled });
+
+async function notifyBetSettlement(room, player) {
+  if (!supabaseAdmin || !room.settled || !player.userId) return;
+  const { data, error } = await supabaseAdmin.from('match_wagers')
+    .select('payout_credits,amount').eq('participant_id', player.userId)
+    .eq('room_code', room.code).eq('match_id', room.matchId).maybeSingle();
+  if (error) { console.error('Settled wager could not be loaded', error); return; }
+  const wager = data;
+  send(player.ws, { type: 'bet_settled', payout: wager?.payout_credits || 0,
+    refunded: !!wager && wager.payout_credits === wager.amount, hadBet: !!wager });
+}
+
+function replayResults(room) {
+  const sim = createSim(room.configs, room.seed, room.seconds);
+  const events = [...room.events].sort((a, b) => a.tick - b.tick || a.id - b.id);
+  let i = 0;
+  while (!sim.done) {
+    while (events[i] && events[i].tick <= sim.tick) {
+      const ev = events[i++];
+      sim.retune(ev.colony, ev.stats);
+    }
+    sim.step();
+  }
+  const result = sim.getResults();
+  const topScore = result.rows[0]?.score;
+  const winningColonies = result.reason === 'extinct' || !Number.isFinite(topScore)
+    ? [] : result.rows.filter(row => Math.abs(row.score - topScore) < 1e-9).map(row => row.color);
+  const territoryPercentages = Object.fromEntries(result.rows.map(row => [row.color, row.territory]));
+  return { ...result, winningColonies, territoryPercentages };
+}
+
+async function settleMatch(room) {
+  if (!supabaseAdmin || room.settled || room.settling) return;
+  const result = replayResults(room);
+  if (result.reason === 'time' && clockAt(room) < room.maxTicks) {
+    if (!room.settlementTimer) room.settlementTimer = setTimeout(() => {
+      room.settlementTimer = null;
+      settleMatch(room);
+    }, 250);
+    return;
+  }
+  room.settling = true;
+  const { error } = await supabaseAdmin.rpc('settle_match_wagers', {
+    p_room_code: room.code,
+    p_match_id: room.matchId,
+    p_winning_colonies: result.winningColonies,
+    p_territory_percentages: result.territoryPercentages,
+  });
+  if (error) {
+    console.error('Wager settlement failed', error);
+    room.settling = false;
+    for (const p of room.players) send(p.ws, { type: 'settlement_failed' });
+    room.settlementAttempts = (room.settlementAttempts || 0) + 1;
+    if (room.settlementAttempts < 5 && !room.settlementTimer) room.settlementTimer = setTimeout(() => {
+      room.settlementTimer = null;
+      settleMatch(room);
+    }, 1500);
+    return;
+  }
+  room.settled = true; room.settling = false;
+  room.settlementAttempts = 0;
+  clearTimeout(room.settlementTimer); room.settlementTimer = null;
+  await Promise.all(room.players.map(p => notifyBetSettlement(room, p)));
+}
 
 function stopClock(room) { if (room.clock) clearInterval(room.clock); room.clock = null; }
 function advance(room) {
@@ -151,15 +225,34 @@ function startClock(room) {
 
 wss.on('connection', ws => {
   let room = null, me = null;
+  ws.userId = null;
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
   ws.on('error', () => ws.terminate());
 
-  ws.on('message', raw => {
+  ws.on('message', async raw => {
     if (!allowMessage(ws)) return;
     let m;
     try { m = JSON.parse(raw); } catch { return; }
     if (!m || typeof m.type !== 'string') return;
+
+    if (!ws.userId) {
+      if (ws.authPending || m.type !== 'auth' || typeof m.accessToken !== 'string' || !supabaseAuth) {
+        send(ws, { type: 'auth_failed' }); ws.close(1008, 'Authentication required'); return;
+      }
+      ws.authPending = true;
+      try {
+        const { data, error } = await supabaseAuth.auth.getUser(m.accessToken);
+        if (error || !data.user) throw error || new Error('No authenticated user');
+        ws.userId = data.user.id;
+        send(ws, { type: 'auth_ok' });
+      } catch (error) {
+        console.error('WebSocket authentication failed', error);
+        send(ws, { type: 'auth_failed' }); ws.close(1008, 'Authentication failed');
+      }
+      return;
+    }
+    if (m.type === 'auth') { ws.close(1008, 'Already authenticated'); return; }
 
     if (m.type === 'create' && !room) {
       if (rooms.size >= MAX_ROOMS) return send(ws, { type: 'error', msg: 'Server is at capacity' });
@@ -167,7 +260,7 @@ wss.on('connection', ws => {
       room = { code: newCode(), capacity, seconds: GAME_SECONDS, started: false, players: [], matchId: 0,
                clock: null, clk: null, horizon: 0, maxTicks: 0, events: [], nextId: 1, emptyTimer: null };
       rooms.set(room.code, room);
-      me = { slot: 1, name: cleanName(m.name), ws, host: true, stats: null, spawn: null, colony: 0, token: randomUUID() };
+      me = { slot: 1, name: cleanName(m.name), ws, userId: ws.userId, host: true, stats: null, spawn: null, colony: 0, token: randomUUID(), betAmount: 0 };
       room.players.push(me);
       pushLobby(room);
     }
@@ -176,20 +269,24 @@ wss.on('connection', ws => {
       if (!r) return send(ws, { type: 'error', msg: 'No room with that code' });
       if (r.started) return send(ws, { type: 'error', msg: 'That game already started' });
       if (r.players.length >= r.capacity) return send(ws, { type: 'error', msg: 'Room is full' });
+      if (r.players.some(p => p.userId === ws.userId)) return send(ws, { type: 'error', msg: 'You are already in this room' });
       let slot = 1; while (r.players.some(p => p.slot === slot)) slot++;
       room = r;
-      me = { slot, name: cleanName(m.name), ws, host: false, stats: null, spawn: null, colony: 0, token: randomUUID() };
+      me = { slot, name: cleanName(m.name), ws, userId: ws.userId, host: false, stats: null, spawn: null, colony: 0, token: randomUUID(), betAmount: 0 };
       room.players.push(me);
       pushLobby(room);
     }
     else if (m.type === 'rejoin' && !room) {
       const r = rooms.get(String(m.code ?? '').toUpperCase());
       const p = r && r.players.find(q => q.token === m.token);
-      if (!p) return send(ws, { type: 'rejoin_failed' });
+      if (!p || p.userId !== ws.userId) return send(ws, { type: 'rejoin_failed' });
       const old = p.ws; p.ws = ws;
       if (old && old !== ws) old.terminate();
       room = r; me = p; clearTimeout(room.emptyTimer);
-      if (room.started) send(ws, startMsg(room, me)); else pushLobby(room);
+      if (room.started) {
+        send(ws, startMsg(room, me));
+        if (room.settled) await notifyBetSettlement(room, me);
+      } else pushLobby(room);
     }
     else if (m.type === 'config' && room && !room.started) {
       if (!validStats(m.stats)) return send(ws, { type: 'error', msg: 'Stats must add up to exactly 100' });
@@ -204,13 +301,35 @@ wss.on('connection', ws => {
     else if (m.type === 'start' && room && me.host && !room.started) {
       const ready = room.players.filter(p => p.stats).sort((a, b) => a.slot - b.slot);
       if (ready.length < 2) return send(ws, { type: 'error', msg: 'Need at least 2 ready players' });
-      room.started = true; room.matchId++;
+      clearTimeout(room.settlementTimer); room.settlementTimer = null;
+      room.started = true; room.matchId++; room.settled = false; room.settling = false; room.settlementAttempts = 0;
+      room.bettingUntil = Date.now() + WAGER_WINDOW_MS;
       room.seed = (Math.random() * 2 ** 32) >>> 0;
       room.configs = ready.map(p => ({ name: p.name, slot: p.slot, stats: p.stats, spawn: p.spawn }));
       for (const p of room.players) p.colony = ready.indexOf(p) + 1;
       startClock(room);
       for (const p of room.players) send(p.ws, startMsg(room, p));
       console.log(`room ${room.code}: started with ${ready.length} players (seed ${room.seed}, ${room.seconds}s)`);
+    }
+    else if (m.type === 'bet' && room?.started && !room.settled && !room.settling && me.colony) {
+      if (!supabaseAdmin) return send(ws, { type: 'error', msg: 'Bidding is unavailable right now' });
+      if (+m.matchId !== room.matchId || Date.now() >= room.bettingUntil) return send(ws, { type: 'error', msg: 'Bidding is closed' });
+      const amount = Number(m.amount);
+      if (!Number.isInteger(amount) || amount < 20) return send(ws, { type: 'error', msg: 'Minimum bid is 20 credits' });
+      const { data, error } = await supabaseAdmin.rpc('place_match_wager', {
+        p_participant_id: me.userId, p_room_code: room.code, p_match_id: room.matchId,
+        p_colony: me.colony, p_amount: amount,
+      });
+      if (error) {
+        console.error('Wager could not be placed', error);
+        return send(ws, { type: 'error', msg: 'Bid could not be placed. Check your available credits.' });
+      }
+      const balance = Array.isArray(data) ? data[0]?.available_credits : data?.available_credits;
+      me.betAmount = amount;
+      send(ws, { type: 'bet_ack', amount, balance: Number(balance) });
+    }
+    else if (m.type === 'finish' && room?.started && !room.settled && +m.matchId === room.matchId) {
+      await settleMatch(room);
     }
     else if (m.type === 'tune' && room && room.started && room.clock && me.colony) {
       if (!validStats(m.stats) || room.events.length >= MAX_EVENTS) return;
@@ -225,10 +344,11 @@ wss.on('connection', ws => {
       advance(room); broadcast(room, clockMsg(room));
     }
     else if (m.type === 'reset' && room && me.host && room.started) {
+      clearTimeout(room.settlementTimer); room.settlementTimer = null;
       stopClock(room);
       room.started = false; room.events = [];
       room.players = room.players.filter(p => p.ws);
-      for (const p of room.players) { p.stats = null; p.spawn = null; p.colony = 0; }
+      for (const p of room.players) { p.stats = null; p.spawn = null; p.colony = 0; p.betAmount = 0; }
       pushLobby(room);
     }
   });

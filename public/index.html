@@ -84,6 +84,12 @@
   #tune h2 { font-size:.95rem; margin-bottom:4px; } #tune .presets { margin:8px 0; }
   #tunebtn, #speed { padding:4px 12px; background:#000a; color:var(--text); }
   #lag { background:#000a; color:var(--accent); padding:4px 10px; border-radius:999px; font-size:.8rem; white-space:nowrap; }
+  #bet-panel { position:absolute; top:calc(max(6px, env(safe-area-inset-top)) + 46px); left:max(8px, env(safe-area-inset-left)); z-index:5; width:min(310px, calc(100vw - 16px)); display:grid; gap:7px; background:#131824ee; border:1px solid var(--line); border-radius:14px; padding:10px 12px; backdrop-filter:blur(8px); }
+  #bet-panel h2 { font-size:.9rem; margin:0; }
+  #bet-panel input[type=range] { margin:0; }
+  #bet-panel .bet-value { color:var(--accent); font-weight:800; font-variant-numeric:tabular-nums; }
+  #bet-status, #bet-time { color:var(--dim); font-size:.78rem; }
+  #bet-panel button { padding:6px 14px; }
 
 
   #results { display:flex; flex-direction:column; gap:10px; }
@@ -160,6 +166,13 @@
 <div id="game" class="screen" hidden>
   <canvas id="cv"></canvas>
   <div id="hud"><span id="timer">3:00</span><span id="lag" hidden></span><div id="chips"></div><button id="speed">1×</button><button id="tunebtn">⚙ Tune</button></div>
+  <aside id="bet-panel" hidden>
+    <h2>Bet on your colony <span id="bet-time"></span></h2>
+    <div class="row"><span>Bid</span><span class="bet-value" id="bet-value">20 credits</span></div>
+    <input id="bet-slider" type="range" min="20" max="100" step="1" value="20" aria-label="Bid amount in credits">
+    <button id="bet-submit" type="button">Place bid</button>
+    <div id="bet-status" role="status" aria-live="polite"></div>
+  </aside>
   <aside id="tune" hidden>
     <h2>Tune your colony <span id="tleft">live ✓</span></h2>
     <small>Applies live to your colony on every screen. Points must total exactly 100.</small>

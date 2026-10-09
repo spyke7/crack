@@ -26,11 +26,13 @@ Node.js 22 or newer is required by the current Supabase JavaScript client.
 
 ## Authentication and credits setup
 
-Fill in `.env` with the Supabase project URL, publishable (or legacy anon) key, and Postgres connection string. The browser only receives the public Supabase key; never put a service-role key in `.env` for this app.
+Fill in `.env` with the Supabase project URL, publishable (or legacy anon) key, Postgres connection string, and server-only service-role key. The app never sends the service-role key to the browser.
 
 In Supabase, enable **Google** under Authentication → Sign In / Providers and enter the Google OAuth client ID and secret. Disable Email, Phone, and any other providers so Google is the only sign-in method. In Google Auth Platform, add `https://<your-project-ref>.supabase.co/auth/v1/callback` as an authorized redirect URI. In Supabase's URL Configuration, add this app's origin to the allowed redirect URLs (for local development, `http://localhost:3000/**`). The app uses Supabase's persistent browser session and automatic token refresh. Supabase sessions have no maximum lifetime by default; if a maximum lifetime is enabled in Auth → Sessions, set it to at least 30 days. Keep the JWT expiry at its recommended short duration; refresh tokens maintain the signed-in session.
 
 Apply the credits schema and auth-user trigger with `npm run db:migrate`. Each newly created Supabase auth user receives one `participant_credits` row with 100 credits. Row-level security lets each signed-in user read only their own balance; browser clients cannot change it. Drizzle's schema is in `src/db/schema.js`, with the migration in `drizzle/`.
+
+During a match, each signed-in player can wager at least 20 credits during the first 20 seconds. The maximum is their available balance plus any bid already committed. At results, the 90% payout pool is split among correct bids in proportion to bid amount and final territory percentage; the remaining 10% is recorded privately as app commission. If no wager backs a winning colony, all wagers are returned. Apply the wager tables and private settlement functions with `npm run db:migrate`; wager changes and settlements run through server-only database functions.
 
 The app flow is landing → Google sign-in/sign-up → room lobby. The lobby shows the account's credits in its top-right corner.
 
