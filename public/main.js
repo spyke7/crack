@@ -97,17 +97,28 @@ if (invited) $('code').value = invited.toUpperCase().slice(0, 4);
 function connect(firstMessage) {
   const name = $('name').value.trim() || 'Player';
   try { localStorage.setItem('rw-name', name); } catch {   }
+  clearTimeout(reconnectTimer); reconnectTimer = 0;
   if (ws) { ws.onclose = null; ws.close(); }
-  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`);
-  ws.onopen = () => send(firstMessage(name));
-  ws.onmessage = e => onMessage(JSON.parse(e.data));
+  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws`);
+  ws.onopen = () => { reconnectDelay = 1000; send(firstMessage(name)); };
+  ws.onmessage = e => { try { onMessage(JSON.parse(e.data)); } catch { toast('Received an invalid server message'); } };
   ws.onerror = () => toast('Cannot reach the server');
   ws.onclose = () => {
     if (screen === 'game' || screen === 'results') {
       toast('Connection lost, reconnecting…');
-      setTimeout(() => { if (!ws || ws.readyState > 1) rejoin(); }, 1500);
+      scheduleReconnect();
     } else { toast('Disconnected from server'); show('home'); }
   };
+}
+let reconnectTimer = 0, reconnectDelay = 1000;
+function scheduleReconnect() {
+  if (reconnectTimer || (screen !== 'game' && screen !== 'results')) return;
+  const wait = reconnectDelay + Math.random() * 250;
+  reconnectDelay = Math.min(30000, reconnectDelay * 2);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = 0;
+    if (!ws || ws.readyState > 1) rejoin();
+  }, wait);
 }
 function rejoin() {
   const s = getSession(); if (!s) return false;
@@ -403,6 +414,7 @@ document.addEventListener('visibilitychange', () => {
 
 function stopGame() {
   cancelAnimationFrame(frameId);
+  clearTimeout(reconnectTimer); reconnectTimer = 0; reconnectDelay = 1000;
   clearTimeout(tuneTimer); $('tune').hidden = true;
   if (renderer) renderer.destroy();
   sim = null; renderer = null; matchId = 0;

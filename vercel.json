@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    { "source": "/", "destination": "/public/index.html" },
+    { "source": "/main.js", "destination": "/public/main.js" },
+    { "source": "/sim.js", "destination": "/public/sim.js" },
+    { "source": "/render.js", "destination": "/public/render.js" }
+  ],
+  "functions": {
+    "api/ws.js": { "maxDuration": 300 }
+  }
+}

@@ -140,7 +140,9 @@ The app asks mobile users to rotate to landscape mode. Clipboard access on a non
 
 ## Deployment
 
-Crack needs a running Node.js process and WebSocket support, so it should be deployed as a web service rather than a static site.
+Crack needs a Node.js runtime and WebSocket support. A long-running service such as Render, Railway, or Fly.io is the simplest deployment option.
+
+The repository also includes a Vercel adapter in `api/ws.js` and `vercel.json`. Vercel WebSockets require Fluid Compute, and this project currently keeps rooms in process memory. That is suitable for a small demo on one warm instance, but production deployments that can use multiple instances or restart functions need a shared room store and pub/sub layer such as Redis.
 
 Typical deployment settings on services such as Render, Railway, or Fly.io are:
 
@@ -150,6 +152,8 @@ Start command: npm start
 ```
 
 The server uses the `PORT` supplied by the hosting platform. Once deployed over HTTPS, the browser automatically uses secure WebSockets.
+
+For Vercel, enable Fluid Compute, deploy the repository with the included configuration, and verify that the WebSocket endpoint `/api/ws` is reachable. Vercel Functions have a maximum connection duration, so reconnect and state-resynchronization logic are required; the client includes exponential reconnect backoff.
 
 For a quick local demo, a tunnel can expose the local server:
 

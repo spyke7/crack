@@ -44,8 +44,8 @@ Change the port: `PORT=8080 npm start` (Windows PowerShell: `$env:PORT=8080; npm
 - `navigator.clipboard` only works on https or localhost, so on `http://192.168...` "Copy invite link" falls back to a copy prompt. That is expected.
 
 ### 1.5 Put it online (for the demo)
-WebSockets need a real running Node process, so **not** Vercel/Netlify static hosting.
-- **Render / Railway / Fly.io**: push the folder to GitHub, create a *Web Service*, build command `npm install`, start command `npm start`. They set `PORT` for you and give you `https://`; the client automatically switches to `wss://`.
+WebSockets need a Node.js runtime. **Render / Railway / Fly.io** are the simplest deployment targets: push the folder to GitHub, create a *Web Service*, use build command `npm install`, and start command `npm start`. They set `PORT` for you and give you `https://`; the client automatically switches to `wss://`.
+- **Vercel**: the repository includes `api/ws.js` and `vercel.json` for Vercel's WebSocket Functions. Enable Fluid Compute and verify `/api/ws` after deployment. Rooms currently live in process memory, so multi-instance deployments or function restarts require an external shared store and pub/sub layer such as Redis.
 - Free tiers sleep when idle: open the site 2-3 minutes before presenting.
 - No-deploy alternative: run locally and expose it with a tunnel (`npx localtunnel --port 3000`, or ngrok).
 

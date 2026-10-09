@@ -25,28 +25,60 @@ const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
 };
+const envInt = (value, fallback, min, max) => {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+};
+const MAX_ROOMS = envInt(process.env.MAX_ROOMS, 1000, 1, 10000);
+const MAX_MESSAGES_PER_WINDOW = 120;
+const MESSAGE_WINDOW_MS = 10000;
+const allowedOrigins = new Set(String(process.env.ALLOWED_ORIGINS ?? '').split(',').map(origin => origin.trim()).filter(Boolean));
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
+  'Content-Security-Policy': "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+};
 
 
 const server = http.createServer((req, res) => {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.writeHead(405, { ...SECURITY_HEADERS, Allow: 'GET, HEAD' });
+    return res.end('Method not allowed');
+  }
   let rel;
-  try { rel = decodeURIComponent(new URL(req.url, 'http://x').pathname); }
-  catch { res.writeHead(400); return res.end('Bad request'); }
-  if (rel === '/health') return res.end('ok');
+  try { rel = decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname); }
+  catch { res.writeHead(400, SECURITY_HEADERS); return res.end('Bad request'); }
+  if (rel.includes('\0')) { res.writeHead(400, SECURITY_HEADERS); return res.end('Bad request'); }
+  if (rel === '/health') {
+    res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+    return res.end('ok');
+  }
   if (rel === '/') rel = '/index.html';
-  const file = path.join(PUBLIC, path.normalize(rel));
-  if (!file.startsWith(PUBLIC + path.sep)) { res.writeHead(403); return res.end('Forbidden'); }
+  const file = path.resolve(PUBLIC, `.${rel}`);
+  if (!file.startsWith(PUBLIC + path.sep)) { res.writeHead(403, SECURITY_HEADERS); return res.end('Forbidden'); }
   fs.readFile(file, (err, data) => {
-    if (err) { res.writeHead(404); return res.end('Not found'); }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
-    res.end(data);
+    if (err) {
+      const status = err.code === 'ENOENT' ? 404 : 500;
+      res.writeHead(status, SECURITY_HEADERS);
+      return res.end(status === 404 ? 'Not found' : 'Internal server error');
+    }
+    res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache', 'Content-Length': data.byteLength });
+    res.end(req.method === 'HEAD' ? undefined : data);
   });
 });
+server.requestTimeout = 30000;
+server.headersTimeout = 15000;
+server.keepAliveTimeout = 5000;
 
 
 
 
 
-const wss = new WebSocketServer({ server, maxPayload: 4096 });
+const wss = new WebSocketServer({
+  server,
+  maxPayload: 4096,
+  verifyClient: ({ origin }, done) => done(!origin || !allowedOrigins.size || allowedOrigins.has(origin), 403, 'Forbidden origin'),
+});
 const rooms = new Map();
 const LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -56,11 +88,22 @@ function newCode() {
   while (rooms.has(code));
   return code;
 }
-const send = (ws, msg) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); };
+const send = (ws, msg) => {
+  if (!ws || ws.readyState !== 1) return;
+  try { ws.send(JSON.stringify(msg)); } catch { ws.terminate(); }
+};
 const broadcast = (room, msg) => { for (const p of room.players) send(p.ws, msg); };
 const cleanName = n => String(n ?? '').trim().slice(0, 16) || 'Player';
 const validSpawn = s => s && Number.isFinite(s.x) && Number.isFinite(s.y) && s.x >= 0.05 && s.x <= 0.95 && s.y >= 0.05 && s.y <= 0.95;
 const cleanSeconds = v => Math.min(MAX_SECONDS, Math.max(MIN_SECONDS, Math.round(+v) || GAME_SECONDS));
+function allowMessage(ws) {
+  const now = Date.now();
+  if (!ws.messageWindow || now - ws.messageWindow.started >= MESSAGE_WINDOW_MS) ws.messageWindow = { started: now, count: 0 };
+  ws.messageWindow.count++;
+  if (ws.messageWindow.count <= MAX_MESSAGES_PER_WINDOW) return true;
+  ws.close(1008, 'Too many messages');
+  return false;
+}
 
 function pushLobby(room) {
   const players = room.players.map(p => ({ slot: p.slot, name: p.name, host: p.host, ready: !!p.stats, spawn: p.spawn }));
@@ -102,13 +145,16 @@ wss.on('connection', ws => {
   let room = null, me = null;
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
+  ws.on('error', () => ws.terminate());
 
   ws.on('message', raw => {
+    if (!allowMessage(ws)) return;
     let m;
     try { m = JSON.parse(raw); } catch { return; }
     if (!m || typeof m.type !== 'string') return;
 
     if (m.type === 'create' && !room) {
+      if (rooms.size >= MAX_ROOMS) return send(ws, { type: 'error', msg: 'Server is at capacity' });
       const capacity = Math.min(Math.max(parseInt(m.capacity) || 4, 2), MAX_PLAYERS);
       room = { code: newCode(), capacity, seconds: GAME_SECONDS, started: false, players: [], matchId: 0,
                clock: null, clk: null, horizon: 0, maxTicks: 0, events: [], nextId: 1, emptyTimer: null };
@@ -208,7 +254,9 @@ setInterval(() => {
   }
 }, 30000);
 
-server.listen(PORT, '0.0.0.0', () => {
+export default server;
+
+if (!process.env.VERCEL) server.listen(PORT, '0.0.0.0', () => {
   console.log(`\nCrack is running\n  this computer : http://localhost:${PORT}`);
   for (const list of Object.values(os.networkInterfaces()))
     for (const i of list ?? []) if (i.family === 'IPv4' && !i.internal) console.log(`  on your Wi-Fi : http://${i.address}:${PORT}   (open this on your phone)`);
