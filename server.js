@@ -10,6 +10,7 @@
 
 
 
+import 'dotenv/config';
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -33,10 +34,12 @@ const MAX_ROOMS = envInt(process.env.MAX_ROOMS, 1000, 1, 10000);
 const MAX_MESSAGES_PER_WINDOW = 120;
 const MESSAGE_WINDOW_MS = 10000;
 const allowedOrigins = new Set(String(process.env.ALLOWED_ORIGINS ?? '').split(',').map(origin => origin.trim()).filter(Boolean));
+let supabaseOrigin = '';
+try { supabaseOrigin = new URL(process.env.SUPABASE_URL).origin; } catch { /* Supabase is configured after setup. */ }
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'no-referrer',
-  'Content-Security-Policy': "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+  'Content-Security-Policy': `default-src 'self'; connect-src 'self' ws: wss: ${supabaseOrigin}; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`,
 };
 
 
@@ -52,6 +55,11 @@ const server = http.createServer((req, res) => {
   if (rel === '/health') {
     res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
     return res.end('ok');
+  }
+  if (rel === '/api/config') {
+    const body = JSON.stringify({ supabaseUrl: process.env.SUPABASE_URL || '', supabaseAnonKey: process.env.SUPABASE_ANON_KEY || '' });
+    res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Length': Buffer.byteLength(body) });
+    return res.end(req.method === 'HEAD' ? undefined : body);
   }
   if (rel === '/') rel = '/index.html';
   const file = path.resolve(PUBLIC, `.${rel}`);

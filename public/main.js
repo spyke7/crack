@@ -12,10 +12,11 @@
 
 import { createSim, STATS, STAT_MAX, BUDGET, COLORS, MAX_PLAYERS, TPS, W, H, MIN_SECONDS, MAX_SECONDS } from './sim.js';
 import { createRenderer } from './render.js';
+import { createClient } from './vendor/auth.js';
 
 const $ = id => document.getElementById(id);
-const SCREENS = ['home', 'room', 'game', 'results'];
-let screen = 'home';
+const SCREENS = ['landing', 'auth', 'home', 'room', 'game', 'results'];
+let screen = 'landing';
 function show(name) { screen = name; for (const s of SCREENS) $(s).hidden = s !== name; }
 let toastTimer;
 function toast(msg) { const t = $('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 2800); }
@@ -51,6 +52,60 @@ let sim = null;
 
 let ws = null;
 const send = msg => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); };
+
+let supabase = null, currentUser = null;
+function setCredits(value) { $('credits').textContent = `${Number.isInteger(value) ? value : 100} credits`; }
+async function loadCredits() {
+  if (!supabase || !currentUser) return;
+  const { data, error } = await supabase.from('participant_credits').select('credits').eq('participant_id', currentUser.id).single();
+  if (error) { console.error('Credits could not be loaded', error); toast('Your credits are temporarily unavailable'); return; }
+  setCredits(data.credits);
+}
+async function initializeAuth() {
+  const configResponse = await fetch('/api/config', { cache: 'no-store' });
+  const config = await configResponse.json();
+  if (!config.supabaseUrl || !config.supabaseAnonKey) {
+    show('auth');
+    $('auth-message').textContent = 'Sign-in is temporarily unavailable. Please try again later.';
+    return;
+  }
+  supabase = createClient(config.supabaseUrl, config.supabaseAnonKey, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'pkce' },
+  });
+  supabase.auth.onAuthStateChange((event, session) => {
+    currentUser = session?.user ?? null;
+    if (currentUser) {
+      show('home');
+      if (currentUser.user_metadata?.full_name && !$('name').value) $('name').value = currentUser.user_metadata.full_name.slice(0, 16);
+      queueMicrotask(loadCredits);
+    } else if (event === 'SIGNED_OUT') {
+      if (ws) { ws.onclose = null; ws.close(); ws = null; }
+      clearSession(); show('landing');
+    }
+  });
+  const { data: { session }, error } = await supabase.auth.getSession();
+  if (error) { show('landing'); return; }
+  if (session?.user) {
+    currentUser = session.user;
+    show('home');
+    await loadCredits();
+    if (!invited && getSession()) rejoin();
+  } else show('landing');
+}
+
+$('landing-continue').onclick = () => show('auth');
+$('auth-back').onclick = () => show('landing');
+$('google-signin').onclick = async () => {
+  if (!supabase) { $('auth-message').textContent = 'Sign-in is temporarily unavailable. Please try again later.'; return; }
+  $('google-signin').disabled = true; $('auth-message').textContent = 'Redirecting to Google…';
+  const { error } = await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin + location.pathname + location.search } });
+  if (error) {
+    console.error('Google sign-in failed', error);
+    $('auth-message').textContent = 'We could not sign you in. Please try again.';
+    $('google-signin').disabled = false;
+  }
+};
+$('signout').onclick = async () => { if (supabase) await supabase.auth.signOut(); };
 
 
 const getSession = () => { try { return JSON.parse(sessionStorage.getItem('rw-session')); } catch { return null; } };
@@ -101,8 +156,8 @@ function connect(firstMessage) {
   if (ws) { ws.onclose = null; ws.close(); }
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws`);
   ws.onopen = () => { reconnectDelay = 1000; send(firstMessage(name)); };
-  ws.onmessage = e => { try { onMessage(JSON.parse(e.data)); } catch { toast('Received an invalid server message'); } };
-  ws.onerror = () => toast('Cannot reach the server');
+  ws.onmessage = e => { try { onMessage(JSON.parse(e.data)); } catch (error) { console.error('Invalid server message', error); toast('Something went wrong. Please try again.'); } };
+  ws.onerror = error => { console.error('WebSocket connection failed', error); toast('Connection unavailable. Please try again.'); };
   ws.onclose = () => {
     if (screen === 'game' || screen === 'results') {
       toast('Connection lost, reconnecting…');
@@ -455,4 +510,8 @@ $('rematch').onclick = () => send({ type: 'reset' });
 $('leave').onclick = () => { clearSession(); location.href = location.pathname; };
 
 
-if (!invited) rejoin();
+initializeAuth().catch(error => {
+  console.error('Authentication could not be initialized', error);
+  show('auth');
+  $('auth-message').textContent = 'Sign-in is temporarily unavailable. Please try again later.';
+});

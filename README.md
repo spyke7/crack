@@ -22,7 +22,17 @@ Matches run for up to three minutes. The results screen compares territory, popu
 - Node.js 18.11 or newer
 - A modern browser with JavaScript and WebSocket support
 
-Node.js 20 or 22 LTS is recommended.
+Node.js 22 or newer is required by the current Supabase JavaScript client.
+
+## Authentication and credits setup
+
+Fill in `.env` with the Supabase project URL, publishable (or legacy anon) key, and Postgres connection string. The browser only receives the public Supabase key; never put a service-role key in `.env` for this app.
+
+In Supabase, enable **Google** under Authentication → Sign In / Providers and enter the Google OAuth client ID and secret. Disable Email, Phone, and any other providers so Google is the only sign-in method. In Google Auth Platform, add `https://<your-project-ref>.supabase.co/auth/v1/callback` as an authorized redirect URI. In Supabase's URL Configuration, add this app's origin to the allowed redirect URLs (for local development, `http://localhost:3000/**`). The app uses Supabase's persistent browser session and automatic token refresh. Supabase sessions have no maximum lifetime by default; if a maximum lifetime is enabled in Auth → Sessions, set it to at least 30 days. Keep the JWT expiry at its recommended short duration; refresh tokens maintain the signed-in session.
+
+Apply the credits schema and auth-user trigger with `npm run db:migrate`. Each newly created Supabase auth user receives one `participant_credits` row with 100 credits. Row-level security lets each signed-in user read only their own balance; browser clients cannot change it. Drizzle's schema is in `src/db/schema.js`, with the migration in `drizzle/`.
+
+The app flow is landing → Google sign-in/sign-up → room lobby. The lobby shows the account's credits in its top-right corner.
 
 ## Quick start
 

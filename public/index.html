@@ -38,6 +38,14 @@
 
   #home { display:flex; align-items:center; justify-content:center; background:radial-gradient(circle at 18% 12%, #1b292d 0, transparent 38%), #0d1417; isolation:isolate; }
   #home .box { position:relative; z-index:2; width:min(420px,100%); display:grid; gap:12px; } .or { text-align:center; color:var(--dim); font-size:.85rem; }
+  #landing, #auth { display:flex; align-items:center; justify-content:center; background:radial-gradient(circle at 18% 12%, #1b292d 0, transparent 38%), #0d1417; }
+  .entry-box { width:min(440px,100%); display:grid; gap:16px; text-align:center; }
+  .entry-box .sub { line-height:1.7; }
+  .google-button { width:100%; display:flex; justify-content:center; align-items:center; gap:10px; }
+  .google-mark { width:19px; height:19px; border-radius:50%; background:white; color:#4285f4; font-weight:800; font-size:13px; display:inline-grid; place-items:center; }
+  .topbar { position:absolute; z-index:3; top:max(14px, env(safe-area-inset-top)); right:max(14px, env(safe-area-inset-right)); display:flex; align-items:center; gap:10px; }
+  .credits { background:#131824dd; border:1px solid var(--line); border-radius:999px; padding:7px 12px; font-weight:700; font-variant-numeric:tabular-nums; }
+  #auth-message { min-height:1.4em; color:var(--dim); }
   #home-cells { position:absolute; inset:0; z-index:0; overflow:hidden; pointer-events:none; opacity:.72; }
   .home-cell { position:absolute; width:clamp(5px, .7vw, 10px); aspect-ratio:1; border:1px solid var(--cell-border); border-radius:2px; background:var(--cell-fill); box-shadow:0 0 16px var(--cell-glow); animation:home-cell-drift var(--cell-duration) ease-in-out var(--cell-delay) infinite alternate; animation-play-state:running; }
   #home[hidden] .home-cell { animation-play-state:paused; }
@@ -102,9 +110,25 @@
 </head>
 <body>
 
+<main id="landing" class="screen">
+  <div class="entry-box">
+    <div><h1>Crack</h1><div class="sub">Design your colony's laws. Drop a seed. Watch the territory war paint itself.</div></div>
+    <button id="landing-continue">Continue</button>
+  </div>
+</main>
 
-<main id="home" class="screen">
+<main id="auth" class="screen" hidden>
+  <div class="entry-box">
+    <div><h1>Welcome to Crack</h1><div class="sub">Sign in or create an account to join the colony war.</div></div>
+    <button id="google-signin" class="google-button"><span class="google-mark" aria-hidden="true">G</span>Continue with Google</button>
+    <div id="auth-message" role="status" aria-live="polite"></div>
+    <button id="auth-back" class="ghost">Back</button>
+  </div>
+</main>
+
+<main id="home" class="screen" hidden>
   <div id="home-cells" aria-hidden="true"></div>
+  <div class="topbar"><span class="credits" id="credits">100 credits</span><button id="signout" class="ghost" type="button">Sign out</button></div>
   <div class="box">
     <div><h1>Crack</h1><div class="sub">Design your colony's laws. Drop a seed. Watch the territory war paint itself.</div></div>
     <input id="name" type="text" maxlength="16" placeholder="Your name" autocomplete="off">
